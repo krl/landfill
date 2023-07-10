@@ -10,8 +10,8 @@ pub use contentid::ContentId;
 mod header;
 use header::Header;
 
-mod checksum;
-use checksum::CheckSummer;
+mod journal;
+use journal::Journal;
 
 mod index;
 use index::{CheckSlot, Index};
@@ -21,9 +21,9 @@ use data::Data;
 
 pub struct LandFill<D> {
     header: Header,
+    journal: Journal,
     index: Index,
     data: Data,
-    chk: CheckSummer,
     _marker: PhantomData<D>,
 }
 
@@ -32,45 +32,53 @@ where
     D: Digest,
 {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
+        println!("creating {:?}", path.as_ref());
+
         fs::create_dir_all(&path)?;
 
         let header = Header::open(&path)?;
 
-        let (n_pages, bytes_written) = header.read_journal();
+        let journal = Journal::open(&path, header)?;
 
-        let chk = header.checksummer();
-
-        let index = Index::open(&path, n_pages, chk.clone())?;
-        let data = Data::open(&path, bytes_written)?;
+        let index = Index::open(&path, header, journal.clone())?;
+        let data = Data::open(&path, journal.clone())?;
 
         Ok(LandFill {
             header,
-            chk,
+            journal,
             index,
             data,
             _marker: PhantomData,
         })
     }
 
-    pub fn insert_aligned(&self, bytes: &[u8], alignment: usize) -> io::Result<ContentId> {
+    pub fn insert_aligned(
+        &self,
+        bytes: &[u8],
+        alignment: usize,
+    ) -> io::Result<ContentId> {
         assert!(bytes.len() <= u32::MAX as usize);
         let id = ContentId::hash_bytes::<D>(bytes);
-        let len = bytes.len() as u32;
+
         self.index.insert(id, |check| match check {
             CheckSlot::MatchingDiscriminant { ofs, len } => {
                 if self.data.read(ofs, len) == bytes {
+                    // this value is already stored in the database
                     Ok(true) // found
                 } else {
                     Ok(false) // continue searching
                 }
             }
             CheckSlot::Vacant(mut slot) => {
-                let offset = self.header.reserve_data_bytes(len, alignment)?;
-                self.data.write(bytes, offset);
+                let len = bytes.len() as u32;
+                let offset = self.journal.reserve_data_bytes(len, alignment);
+
+                self.data.write(bytes, offset)?;
                 slot.record(offset, len, id.discriminant());
+
                 Ok(true)
             }
-        });
+        })?;
 
         Ok(id)
     }
@@ -100,7 +108,9 @@ mod test {
     use std::path::PathBuf;
     use tempfile;
 
-    fn with_temp_path<R, F: FnMut(&Path) -> io::Result<R>>(mut f: F) -> io::Result<R> {
+    fn with_temp_path<R, F: FnMut(&Path) -> io::Result<R>>(
+        mut f: F,
+    ) -> io::Result<R> {
         let dir = tempfile::tempdir()?;
         let mut path = PathBuf::from(dir.path());
         path.push("db");
@@ -108,7 +118,7 @@ mod test {
     }
 
     #[test]
-    fn test() -> io::Result<()> {
+    fn trivial() -> io::Result<()> {
         with_temp_path(|path| {
             let db = Db::open(path)?;
 
@@ -126,6 +136,32 @@ mod test {
             let back = db.get(id);
 
             assert_eq!(back, Some(&message[..]));
+
+            Ok(())
+        })
+    }
+
+    const N: usize = 2;
+
+    #[test]
+    fn multiple() -> io::Result<()> {
+        with_temp_path(|path| {
+            let db = Db::open(path)?;
+
+            let mut ids = vec![];
+
+            for i in 0..N {
+                let string = format!("hello world! {}", i);
+                ids.push(db.insert(string.as_bytes())?);
+            }
+
+            for i in 0..N {
+                let id = ids[i];
+                assert_eq!(
+                    db.get(id),
+                    Some(format!("hello world! {}", i).as_bytes())
+                )
+            }
 
             Ok(())
         })

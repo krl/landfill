@@ -11,21 +11,30 @@ const MAP_BYTES_MIN: usize = 1024; // map minimum a gigabyte
 const N_LANES: usize = 32;
 const LANE_BASE_SIZE: usize = 1024 * 1024;
 
+use crate::journal::Journal;
+
 pub struct Data {
     file: File,
     maps: [OnceLock<Mmap>; N_LANES],
 }
 
 impl Data {
-    pub(crate) fn open<P: AsRef<Path>>(path: P, bytes_written: u64) -> io::Result<Data> {
+    pub(crate) fn open<P: AsRef<Path>>(
+        path: P,
+        journal: Journal,
+    ) -> io::Result<Data> {
         let mut pb = PathBuf::from(path.as_ref());
         pb.push("data");
+
+        println!("opening {:?}", pb);
 
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .open(&pb)?;
+
+        let bytes_written = journal.bytes_written();
 
         file.set_len(bytes_written)?;
 
@@ -34,12 +43,15 @@ impl Data {
         let mut lane = 0;
         let mut offset = 0;
         let mut size = LANE_BASE_SIZE;
-        let mut left_to_map = std::cmp::max(bytes_written, LANE_BASE_SIZE as u64);
+        let mut left_to_map =
+            std::cmp::max(bytes_written, LANE_BASE_SIZE as u64);
 
         let maps: [OnceLock<Mmap>; N_LANES] = arr![OnceLock::default(); 32];
 
         while left_to_map > 0 {
-            let map = unsafe { MmapOptions::new().len(size).offset(offset).map(&file)? };
+            let map = unsafe {
+                MmapOptions::new().len(size).offset(offset).map(&file)?
+            };
             maps[lane]
                 .set(map)
                 .expect("only one call site, data races impossible");

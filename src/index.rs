@@ -8,7 +8,8 @@ use bytemuck::{Pod, Zeroable};
 use memmap2::MmapMut;
 use parking_lot::{Mutex, MutexGuard};
 
-use crate::CheckSummer;
+use crate::header::Header;
+use crate::journal::Journal;
 use crate::ContentId;
 
 const FANOUT: usize = 256 * 256;
@@ -57,18 +58,21 @@ pub(crate) enum CheckSlot<'a> {
 pub struct Index {
     file: File,
     map: UnsafeCell<MmapMut>,
-    chk: CheckSummer,
+    header: Header,
+    journal: Journal,
     writelocks: [Mutex<()>; N_LOCKS],
 }
 
 impl Index {
     pub(crate) fn open<P: AsRef<Path>>(
         path: P,
-        n_pages: u32,
-        chk: CheckSummer,
+        header: Header,
+        journal: Journal,
     ) -> io::Result<Index> {
         let mut pb = PathBuf::from(path.as_ref());
         pb.push("index");
+
+        println!("opening {:?}", pb);
 
         let file = OpenOptions::new()
             .read(true)
@@ -76,7 +80,11 @@ impl Index {
             .create(true)
             .open(&pb)?;
 
-        file.set_len((n_pages as usize * mem::size_of::<TreeNode>()) as u64)?;
+        let nodes_reserved = dbg!(journal.nodes_reserved());
+
+        let index_len = file.set_len(
+            (nodes_reserved as usize * mem::size_of::<TreeNode>()) as u64,
+        )?;
 
         let map = unsafe { UnsafeCell::new(MmapMut::map_mut(&file)?) };
 
@@ -85,30 +93,38 @@ impl Index {
         Ok(Index {
             file,
             map,
-            chk,
+            header,
+            journal,
             writelocks,
         })
     }
 
-    pub(crate) fn insert<C>(&self, id: ContentId, check_if_found: C) -> io::Result<()>
+    pub(crate) fn insert<C>(
+        &self,
+        id: ContentId,
+        check_if_found: C,
+    ) -> io::Result<()>
     where
         C: Fn(CheckSlot) -> io::Result<bool>,
     {
         let discriminant = id.discriminant();
 
-        let mut entropy = self.chk.checksum(id);
+        let mut entropy = self.header.checksum(id);
 
         let map = unsafe { &mut *self.map.get() };
 
+        println!("looking in map length {:?}", map.len());
+
         let root_node_slice = &mut map[..mem::size_of::<TreeNode>()];
-        let root_node: &mut TreeNode = &mut bytemuck::cast_slice_mut(root_node_slice)[0];
+        let root_node: &mut TreeNode =
+            &mut bytemuck::cast_slice_mut(root_node_slice)[0];
         let mut current_node = root_node;
 
-        let slot_nr = (entropy % FANOUT as u64) as usize;
-        let lock_nr = (entropy % N_LOCKS as u64) as usize;
-        let slot = &mut current_node.0[slot_nr];
-
         loop {
+            let slot_nr = (entropy % FANOUT as u64) as usize;
+            let lock_nr = (entropy % N_LOCKS as u64) as usize;
+            let slot = &mut current_node.0[slot_nr];
+
             if slot == &TreeSlot::zeroed()
                 && check_if_found(CheckSlot::Vacant(TreeInsert {
                     slot,
@@ -128,29 +144,39 @@ impl Index {
             }
 
             if slot.next_node_nr != 0
-                && self.chk.checksum_truncated(&slot.next_node_nr) == slot.next_node_checksum
+                && self.header.checksum_truncated(&slot.next_node_nr)
+                    == slot.next_node_checksum
             {
                 // reshuffle & follow to next page
                 entropy = entropy.wrapping_mul(entropy);
                 current_node = self.get_node(slot.next_node_nr);
+                continue;
             }
 
-            todo!("we need to create a new node!")
+            // here we have to create a new next node
+
+            let _new_node_nr = self.journal.reserve_node();
+            todo!("a")
         }
     }
 
-    pub(crate) fn find<'a, C>(&'a self, id: ContentId, check_if_found: C) -> Option<&'a [u8]>
+    pub(crate) fn find<'a, C>(
+        &'a self,
+        id: ContentId,
+        check_if_found: C,
+    ) -> Option<&'a [u8]>
     where
         C: Fn(u64, u32) -> Option<&'a [u8]>,
     {
         let discriminant = id.discriminant();
 
-        let mut entropy = self.chk.checksum(id);
+        let mut entropy = self.header.checksum(id);
 
         let map = unsafe { &mut *self.map.get() };
 
         let root_node_slice = &mut map[..mem::size_of::<TreeNode>()];
-        let root_node: &mut TreeNode = &mut bytemuck::cast_slice_mut(root_node_slice)[0];
+        let root_node: &mut TreeNode =
+            &mut bytemuck::cast_slice_mut(root_node_slice)[0];
         let mut current_node = root_node;
 
         let slot_nr = (entropy % FANOUT as u64) as usize;
@@ -164,7 +190,8 @@ impl Index {
             }
 
             if slot.next_node_nr != 0
-                && self.chk.checksum_truncated(&slot.next_node_nr) == slot.next_node_checksum
+                && self.header.checksum_truncated(&slot.next_node_nr)
+                    == slot.next_node_checksum
             {
                 // reshuffle & follow to next page
                 entropy = entropy.wrapping_mul(entropy);
