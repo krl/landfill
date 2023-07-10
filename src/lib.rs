@@ -10,8 +10,11 @@ pub use contentid::ContentId;
 mod header;
 use header::Header;
 
+mod checksum;
+use checksum::CheckSummer;
+
 mod index;
-use index::{CheckSlot, ContinueSearch, Index};
+use index::{CheckSlot, Index};
 
 mod data;
 use data::Data;
@@ -20,6 +23,7 @@ pub struct LandFill<D> {
     header: Header,
     index: Index,
     data: Data,
+    chk: CheckSummer,
     _marker: PhantomData<D>,
 }
 
@@ -34,44 +38,57 @@ where
 
         let (n_pages, bytes_written) = header.read_journal();
 
-        let index = Index::open(&path, n_pages)?;
+        let chk = header.checksummer();
+
+        let index = Index::open(&path, n_pages, chk.clone())?;
         let data = Data::open(&path, bytes_written)?;
 
         Ok(LandFill {
             header,
+            chk,
             index,
             data,
             _marker: PhantomData,
         })
     }
 
-    fn _insert(&self, bytes: &[u8], id: ContentId, page: u32, alignment: usize) -> io::Result<()> {
-        self.index.insert(id, &self.header, |check| match check {
+    pub fn insert_aligned(&self, bytes: &[u8], alignment: usize) -> io::Result<ContentId> {
+        assert!(bytes.len() <= u32::MAX as usize);
+        let id = ContentId::hash_bytes::<D>(bytes);
+        let len = bytes.len() as u32;
+        self.index.insert(id, |check| match check {
             CheckSlot::MatchingDiscriminant { ofs, len } => {
                 if self.data.read(ofs, len) == bytes {
-                    Ok(ContinueSearch::No)
+                    Ok(true) // found
                 } else {
-                    Ok(ContinueSearch::Yes)
+                    Ok(false) // continue searching
                 }
             }
-            CheckSlot::Vacant(slot) => todo!(),
+            CheckSlot::Vacant(mut slot) => {
+                let offset = self.header.reserve_data_bytes(len, alignment)?;
+                self.data.write(bytes, offset);
+                slot.record(offset, len, id.discriminant());
+                Ok(true)
+            }
         });
-
-        Ok(())
-    }
-
-    pub fn insert(&self, bytes: &[u8]) -> io::Result<ContentId> {
-        assert!(bytes.len() <= u32::MAX as usize);
-        let output = D::digest(bytes);
-        let id = ContentId::from_slice(output.as_ref());
-
-        self._insert(bytes, id, 0, 1)?;
 
         Ok(id)
     }
 
-    pub fn get(&self, _id: ContentId) -> Option<&[u8]> {
-        todo!()
+    pub fn insert(&self, bytes: &[u8]) -> io::Result<ContentId> {
+        self.insert_aligned(bytes, 1)
+    }
+
+    pub fn get(&self, id: ContentId) -> Option<&[u8]> {
+        self.index.find(id, |ofs, len| {
+            let bytes = self.data.read(ofs, len);
+            let stored_bytes_id = ContentId::hash_bytes::<D>(bytes);
+            if stored_bytes_id == id {
+                Some(bytes)
+            } else {
+                None
+            }
+        })
     }
 }
 

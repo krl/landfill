@@ -1,3 +1,5 @@
+use blake3::traits::digest::Digest;
+
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct ContentId([u8; 32]);
 
@@ -17,9 +19,10 @@ impl std::fmt::Debug for ContentId {
 }
 
 impl ContentId {
-    pub fn from_slice(slice: &[u8]) -> Self {
+    pub fn hash_bytes<D: Digest>(bytes: &[u8]) -> Self {
+        let output = D::digest(bytes);
         let mut bytes = [0u8; 32];
-        bytes.copy_from_slice(slice);
+        bytes.copy_from_slice(output.as_ref());
         ContentId(bytes)
     }
 

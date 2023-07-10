@@ -1,5 +1,5 @@
+use std::cell::UnsafeCell;
 use std::fs::{File, OpenOptions};
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::{io, mem};
 
@@ -8,7 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use memmap2::MmapMut;
 use parking_lot::{Mutex, MutexGuard};
 
-use crate::header::Header;
+use crate::CheckSummer;
 use crate::ContentId;
 
 const FANOUT: usize = 256 * 256;
@@ -17,7 +17,7 @@ const N_LOCKS: usize = 1024;
 /// A slot representing a value,
 #[allow(unused)]
 #[repr(C, align(32))]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct TreeSlot {
     ofs: u64,                // 8 bytes
     len: u32,                // 4 bytes
@@ -54,20 +54,19 @@ pub(crate) enum CheckSlot<'a> {
     Vacant(TreeInsert<'a>),
 }
 
-pub(crate) enum ContinueSearch {
-    Yes,
-    No,
-}
-
 pub struct Index {
     file: File,
-    map: MmapMut,
-    root_node: *mut TreeNode,
+    map: UnsafeCell<MmapMut>,
+    chk: CheckSummer,
     writelocks: [Mutex<()>; N_LOCKS],
 }
 
 impl Index {
-    pub(crate) fn open<P: AsRef<Path>>(path: P, n_pages: u32) -> io::Result<Index> {
+    pub(crate) fn open<P: AsRef<Path>>(
+        path: P,
+        n_pages: u32,
+        chk: CheckSummer,
+    ) -> io::Result<Index> {
         let mut pb = PathBuf::from(path.as_ref());
         pb.push("index");
 
@@ -77,48 +76,106 @@ impl Index {
             .create(true)
             .open(&pb)?;
 
-        let node_size = mem::size_of::<TreeNode>();
+        file.set_len((n_pages as usize * mem::size_of::<TreeNode>()) as u64)?;
 
-        file.set_len((n_pages as usize * node_size) as u64)?;
-
-        let mut map = unsafe { MmapMut::map_mut(&file)? };
-
-        let node_size = mem::size_of::<TreeNode>();
-
-        let root_node_slice = &mut map.as_mut()[..node_size];
-        let root_node: &mut TreeNode = &mut bytemuck::cast_slice_mut(root_node_slice)[0];
-
-        let root_erased: *mut TreeNode = unsafe { mem::transmute(root_node) };
+        let map = unsafe { UnsafeCell::new(MmapMut::map_mut(&file)?) };
 
         let writelocks = arr![Default::default(); 1024];
 
         Ok(Index {
             file,
             map,
-            root_node: root_erased,
+            chk,
             writelocks,
         })
     }
 
-    pub(crate) fn insert<C>(&self, id: ContentId, header: &Header, check: C)
+    pub(crate) fn insert<C>(&self, id: ContentId, check_if_found: C) -> io::Result<()>
     where
-        C: FnMut(CheckSlot) -> io::Result<ContinueSearch>,
+        C: Fn(CheckSlot) -> io::Result<bool>,
     {
         let discriminant = id.discriminant();
 
-        let mut checksummer = header.checksummer();
-        id.hash(&mut checksummer);
+        let mut entropy = self.chk.checksum(id);
 
-        let entropy = checksummer.finish();
+        let map = unsafe { &mut *self.map.get() };
 
-        let node = self.root_node;
+        let root_node_slice = &mut map[..mem::size_of::<TreeNode>()];
+        let root_node: &mut TreeNode = &mut bytemuck::cast_slice_mut(root_node_slice)[0];
+        let mut current_node = root_node;
+
+        let slot_nr = (entropy % FANOUT as u64) as usize;
+        let lock_nr = (entropy % N_LOCKS as u64) as usize;
+        let slot = &mut current_node.0[slot_nr];
 
         loop {
-            let slot_nr = (entropy % FANOUT as u64) as usize;
-            let slot = unsafe { &mut (*node).0[slot_nr] };
-            todo!()
-        }
+            if slot == &TreeSlot::zeroed()
+                && check_if_found(CheckSlot::Vacant(TreeInsert {
+                    slot,
+                    guard: self.writelocks[lock_nr].lock(),
+                }))?
+            {
+                return Ok(());
+            };
 
+            if slot.discriminant == discriminant
+                && check_if_found(CheckSlot::MatchingDiscriminant {
+                    ofs: slot.ofs,
+                    len: slot.len,
+                })?
+            {
+                return Ok(());
+            }
+
+            if slot.next_node_nr != 0
+                && self.chk.checksum_truncated(&slot.next_node_nr) == slot.next_node_checksum
+            {
+                // reshuffle & follow to next page
+                entropy = entropy.wrapping_mul(entropy);
+                current_node = self.get_node(slot.next_node_nr);
+            }
+
+            todo!("we need to create a new node!")
+        }
+    }
+
+    pub(crate) fn find<'a, C>(&'a self, id: ContentId, check_if_found: C) -> Option<&'a [u8]>
+    where
+        C: Fn(u64, u32) -> Option<&'a [u8]>,
+    {
+        let discriminant = id.discriminant();
+
+        let mut entropy = self.chk.checksum(id);
+
+        let map = unsafe { &mut *self.map.get() };
+
+        let root_node_slice = &mut map[..mem::size_of::<TreeNode>()];
+        let root_node: &mut TreeNode = &mut bytemuck::cast_slice_mut(root_node_slice)[0];
+        let mut current_node = root_node;
+
+        let slot_nr = (entropy % FANOUT as u64) as usize;
+        let slot = &mut current_node.0[slot_nr];
+
+        loop {
+            if slot.discriminant == discriminant {
+                if let Some(bytes) = check_if_found(slot.ofs, slot.len) {
+                    return Some(bytes);
+                }
+            }
+
+            if slot.next_node_nr != 0
+                && self.chk.checksum_truncated(&slot.next_node_nr) == slot.next_node_checksum
+            {
+                // reshuffle & follow to next page
+                entropy = entropy.wrapping_mul(entropy);
+                current_node = self.get_node(slot.next_node_nr);
+            }
+
+            todo!("we need to create a new node!")
+        }
+    }
+
+    fn get_node(&self, _node_nr: u32) -> &mut TreeNode {
         todo!()
     }
 }
