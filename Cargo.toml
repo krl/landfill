@@ -6,6 +6,7 @@ license = "GPLv3"
 
 [dependencies]
 arr_macro = "0.2.1"
+arrayvec = "0.7.4"
 blake3 = { version = "1.4.0", features = ["traits-preview"] }
 bytemuck = "1.13.1"
 memmap2 = "0.7.1"

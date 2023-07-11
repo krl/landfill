@@ -14,26 +14,20 @@ const JOURNAL_LEN: usize = 16;
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct JournalEntry {
-    nodes_reserved: u32,
-    bytes_written: u64,
+    value: u64,
     checksum: u64,
 }
 
 impl JournalEntry {
-    fn new(nodes_reserved: u32, bytes_written: u64, header: Header) -> Self {
-        let checksum = header.checksum((nodes_reserved, bytes_written));
-        JournalEntry {
-            nodes_reserved,
-            bytes_written,
-            checksum,
-        }
+    fn new(value: u64, header: Header) -> Self {
+        let checksum = header.checksum(value);
+        JournalEntry { value, checksum }
     }
 
-    fn get(&self, header: Header) -> Option<(u32, u64)> {
-        let checksum =
-            header.checksum((self.nodes_reserved, self.bytes_written));
+    fn get(&self, header: Header) -> Option<u64> {
+        let checksum = header.checksum(self.value);
         if checksum == self.checksum {
-            Some((self.nodes_reserved, self.bytes_written))
+            Some(self.value)
         } else {
             None
         }
@@ -44,6 +38,7 @@ unsafe impl Zeroable for JournalEntry {}
 unsafe impl Pod for JournalEntry {}
 
 struct JournalInner {
+    #[allow(unused)]
     file: File,
     map: MmapMut,
     latest_entry_index: usize,
@@ -83,19 +78,15 @@ impl Journal {
         assert_eq!(journal_entries.len(), JOURNAL_LEN);
 
         let mut latest_entry_index = 0;
-        let mut candidate = (0, 0);
+        let mut candidate = 0;
 
         for i in 0..JOURNAL_LEN {
-            if let Some((a, b)) = journal_entries[i].get(header) {
-                if (a, b) > candidate {
+            if let Some(val) = journal_entries[i].get(header) {
+                if val > candidate {
                     latest_entry_index = i;
-                    candidate = (a, b);
+                    candidate = val;
                 }
             }
-        }
-
-        if candidate == (0, 0) {
-            journal_entries[0] = JournalEntry::new(1, 0, header)
         }
 
         let inner = JournalInner {
@@ -108,65 +99,26 @@ impl Journal {
         Ok(Journal(Arc::new(Mutex::new(inner))))
     }
 
-    pub fn reserve_data_bytes(&self, len: u32, _alignment: usize) -> u64 {
-        self.0.lock().reserve_data_bytes(len, _alignment)
-    }
-
-    pub fn reserve_node(&self) -> u32 {
-        self.0.lock().reserve_node()
-    }
-
-    pub fn bytes_written(&self) -> u64 {
-        self.0.lock().bytes_written()
-    }
-
-    pub fn nodes_reserved(&self) -> u32 {
-        self.0.lock().nodes_reserved()
+    pub fn update<F>(&self, f: F)
+    where
+        F: FnOnce(u64) -> u64,
+    {
+        self.0.lock().update(f);
     }
 }
 
 impl JournalInner {
-    fn update_entry(&mut self, nodes_reserved: u32, bytes_written: u64) {
+    pub fn update<F>(&mut self, f: F)
+    where
+        F: FnOnce(u64) -> u64,
+    {
+        let old = self.read();
         let entries: &mut [JournalEntry] =
             bytemuck::cast_slice_mut(&mut self.map[..]);
-
         let next_entry = (self.latest_entry_index + 1) % JOURNAL_LEN;
-        let checksum = self.header.checksum((nodes_reserved, bytes_written));
-        entries[next_entry] = JournalEntry {
-            nodes_reserved,
-            bytes_written,
-            checksum,
-        };
+        let new_value = f(old);
+        entries[next_entry] = JournalEntry::new(new_value, self.header);
         self.latest_entry_index = next_entry;
-    }
-
-    // reserve n bytes
-    // TODO: make sure to not land on DATA SEGMENT BORDERS and respect alignment
-    //
-    // NB: Returns the _old_ value, i.e the start of the reserved section,
-    // as opposed to `reserve_node` that returns the _new_ node index
-    fn reserve_data_bytes(&mut self, len: u32, _alignment: usize) -> u64 {
-        let JournalEntry {
-            nodes_reserved,
-            bytes_written,
-            ..
-        } = self.current_entry().clone();
-
-        let new_bytes_written = bytes_written + len as u64;
-        self.update_entry(nodes_reserved, new_bytes_written);
-        bytes_written
-    }
-
-    fn reserve_node(&mut self) -> u32 {
-        let JournalEntry {
-            nodes_reserved,
-            bytes_written,
-            ..
-        } = self.current_entry().clone();
-
-        let new_nodes_reserved = nodes_reserved + 1;
-        self.update_entry(new_nodes_reserved, bytes_written);
-        new_nodes_reserved
     }
 
     fn current_entry(&self) -> &JournalEntry {
@@ -174,11 +126,7 @@ impl JournalInner {
         &entries[self.latest_entry_index]
     }
 
-    fn bytes_written(&self) -> u64 {
-        self.current_entry().bytes_written
-    }
-
-    fn nodes_reserved(&self) -> u32 {
-        self.current_entry().nodes_reserved
+    pub fn read(&self) -> u64 {
+        self.current_entry().value
     }
 }

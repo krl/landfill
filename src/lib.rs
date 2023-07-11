@@ -7,23 +7,21 @@ use blake3::{traits::digest::Digest, Hasher as Blake3};
 mod contentid;
 pub use contentid::ContentId;
 
+mod diskbytes;
+
+mod journal;
+
+use diskbytes::journaled::JournaledBytes;
+
 mod header;
 use header::Header;
 
-mod journal;
-use journal::Journal;
-
 mod index;
-use index::{CheckSlot, Index};
-
-mod data;
-use data::Data;
+use index::Index;
 
 pub struct LandFill<D> {
-    header: Header,
-    journal: Journal,
     index: Index,
-    data: Data,
+    data: JournaledBytes<{ 1024 * 4 }>,
     _marker: PhantomData<D>,
 }
 
@@ -38,14 +36,10 @@ where
 
         let header = Header::open(&path)?;
 
-        let journal = Journal::open(&path, header)?;
-
-        let index = Index::open(&path, header, journal.clone())?;
-        let data = Data::open(&path, journal.clone())?;
+        let index = Index::open(&path, header)?;
+        let data = JournaledBytes::open(&path, header)?;
 
         Ok(LandFill {
-            header,
-            journal,
             index,
             data,
             _marker: PhantomData,
@@ -55,30 +49,40 @@ where
     pub fn insert_aligned(
         &self,
         bytes: &[u8],
-        alignment: usize,
+        _alignment: usize,
     ) -> io::Result<ContentId> {
-        assert!(bytes.len() <= u32::MAX as usize);
+        let len = bytes.len();
         let id = ContentId::hash_bytes::<D>(bytes);
 
-        self.index.insert(id, |check| match check {
-            CheckSlot::MatchingDiscriminant { ofs, len } => {
-                if self.data.read(ofs, len) == bytes {
-                    // this value is already stored in the database
-                    Ok(true) // found
+        self.index.find_matching_or_new(
+            id,
+            |ofs, match_len| {
+                if match_len == len
+                    && self.data.read(ofs, match_len) == Some(bytes)
+                {
+                    // we already have the data
+                    Ok(true)
                 } else {
-                    Ok(false) // continue searching
+                    Ok(false)
                 }
-            }
-            CheckSlot::Vacant(mut slot) => {
-                let len = bytes.len() as u32;
-                let offset = self.journal.reserve_data_bytes(len, alignment);
+            },
+            |mut vacant| {
+                let (ofs, target) = self.data.request_write(len)?;
+                target.copy_from_slice(bytes);
 
-                self.data.write(bytes, offset)?;
-                slot.record(offset, len, id.discriminant());
+                println!(
+                    "target written {:?}",
+                    String::from_utf8_lossy(target)
+                );
 
-                Ok(true)
-            }
-        })?;
+                *vacant = index::TreeSlot::new(
+                    ofs as u64,
+                    len as u32,
+                    id.discriminant(),
+                );
+                Ok(())
+            },
+        )?;
 
         Ok(id)
     }
@@ -88,11 +92,14 @@ where
     }
 
     pub fn get(&self, id: ContentId) -> Option<&[u8]> {
-        self.index.find(id, |ofs, len| {
-            let bytes = self.data.read(ofs, len);
-            let stored_bytes_id = ContentId::hash_bytes::<D>(bytes);
-            if stored_bytes_id == id {
-                Some(bytes)
+        self.index.find_matching(id, |ofs, len| {
+            if let Some(bytes) = self.data.read(ofs, len) {
+                let stored_bytes_id = ContentId::hash_bytes::<D>(bytes);
+                if stored_bytes_id == id {
+                    Some(bytes)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -108,23 +115,25 @@ mod test {
     use std::path::PathBuf;
     use tempfile;
 
-    fn with_temp_path<R, F: FnMut(&Path) -> io::Result<R>>(
-        mut f: F,
-    ) -> io::Result<R> {
+    fn with_temp_path<R, F>(mut f: F) -> io::Result<R>
+    where
+        F: FnMut(&Path) -> io::Result<R>,
+    {
         let dir = tempfile::tempdir()?;
-        let mut path = PathBuf::from(dir.path());
-        path.push("db");
+        let path = PathBuf::from(dir.path());
         f(path.as_ref())
     }
 
     #[test]
-    fn trivial() -> io::Result<()> {
+    fn trivial_insert_read() -> io::Result<()> {
         with_temp_path(|path| {
             let db = Db::open(path)?;
 
             let message = b"hello world";
 
             let id = db.insert(message)?;
+
+            println!("agubi");
 
             assert_eq!(
                 id,

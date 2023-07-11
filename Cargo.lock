@@ -198,6 +198,7 @@ name = "landfill"
 version = "0.1.0"
 dependencies = [
  "arr_macro",
+ "arrayvec",
  "blake3",
  "bytemuck",
  "memmap2",

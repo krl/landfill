@@ -32,9 +32,6 @@ impl Header {
 
         println!("opening {:?}", pb);
 
-        // Let's create constants to be able to write ranges more cleanly later
-        const HEADER_SIZE: usize = mem::size_of::<Header>();
-
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -72,9 +69,5 @@ impl Header {
         );
         t.hash(&mut hasher);
         hasher.finish()
-    }
-
-    pub fn checksum_truncated<T: Hash>(&self, t: T) -> u32 {
-        self.checksum(t) as u32
     }
 }
