@@ -36,11 +36,17 @@ where
     pub fn get_nonzero(&self, index: usize) -> Option<&T> {
         let t_size = mem::size_of::<T>();
         let byte_offset = index * t_size;
-        self.raw.read(byte_offset, t_size).map(|slice| {
+        if let Some(slice) = self.raw.read(byte_offset, t_size) {
             let cast: &[T] = bytemuck::cast_slice(slice);
             debug_assert_eq!(cast.len(), 1);
-            &cast[0]
-        })
+            if cast[0] != T::zeroed() {
+                Some(&cast[0])
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     pub fn initialize(

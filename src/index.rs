@@ -47,8 +47,6 @@ impl Index {
     ) -> io::Result<Index> {
         let mut pb = PathBuf::from(path.as_ref());
         pb.push("index");
-
-        println!("cre dir {pb:?}");
         fs::create_dir_all(&pb)?;
 
         let slots = WriteOnceArray::open(pb)?;
@@ -66,13 +64,15 @@ impl Index {
         F: Fn(usize, usize) -> io::Result<bool>,
         N: Fn(Initialize<TreeSlot>) -> io::Result<()>,
     {
-        let mut base = 0;
+        let mut base: u64 = 0;
 
         let mut entropy = self.header.checksum(id);
         let disc = id.discriminant();
 
+        let mut fanout = FANOUT as u64;
+
         loop {
-            let slot_index = base + (entropy % FANOUT as u64) as usize;
+            let slot_index = (base + (entropy % fanout)) as usize;
 
             if let Some(slot) = self.slots.get_nonzero(slot_index) {
                 if slot.discriminant == disc {
@@ -90,8 +90,9 @@ impl Index {
                 }
             }
 
-            base += FANOUT;
-            entropy = entropy.wrapping_mul(entropy);
+            base += fanout;
+            fanout *= 2;
+            entropy = self.header.checksum(entropy);
         }
     }
 
@@ -99,13 +100,15 @@ impl Index {
     where
         F: Fn(usize, usize) -> Option<R>,
     {
-        let mut base = 0;
+        let mut base: u64 = 0;
 
         let mut entropy = self.header.checksum(id);
         let disc = id.discriminant();
 
+        let mut fanout = FANOUT as u64;
+
         loop {
-            let slot_index = base + (entropy % FANOUT as u64) as usize;
+            let slot_index = (base + (entropy % fanout)) as usize;
 
             if let Some(slot) = self.slots.get_nonzero(slot_index) {
                 if slot.discriminant == disc {
@@ -119,8 +122,9 @@ impl Index {
                 return None;
             }
 
-            base += FANOUT;
-            entropy = entropy.wrapping_mul(entropy);
+            base += fanout;
+            fanout *= 2;
+            entropy = self.header.checksum(entropy);
         }
     }
 }

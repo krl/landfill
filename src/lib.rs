@@ -8,10 +8,9 @@ mod contentid;
 pub use contentid::ContentId;
 
 mod diskbytes;
+use diskbytes::journaled::JournaledBytes;
 
 mod journal;
-
-use diskbytes::journaled::JournaledBytes;
 
 mod header;
 use header::Header;
@@ -30,8 +29,6 @@ where
     D: Digest,
 {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        println!("creating {:?}", path.as_ref());
-
         fs::create_dir_all(&path)?;
 
         let header = Header::open(&path)?;
@@ -69,11 +66,6 @@ where
             |mut vacant| {
                 let (ofs, target) = self.data.request_write(len)?;
                 target.copy_from_slice(bytes);
-
-                println!(
-                    "target written {:?}",
-                    String::from_utf8_lossy(target)
-                );
 
                 *vacant = index::TreeSlot::new(
                     ofs as u64,
@@ -133,8 +125,6 @@ mod test {
 
             let id = db.insert(message)?;
 
-            println!("agubi");
-
             assert_eq!(
                 id,
                 ContentId::from_hex(
@@ -150,7 +140,7 @@ mod test {
         })
     }
 
-    const N: usize = 2;
+    const N: usize = 1024 * 1024;
 
     #[test]
     fn multiple() -> io::Result<()> {

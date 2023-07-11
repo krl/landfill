@@ -17,7 +17,6 @@ struct Mapping {
 
 impl Mapping {
     fn open<P: AsRef<Path>>(path: P, size: usize) -> io::Result<Self> {
-        println!("opening {:?}", path.as_ref());
         let file = OpenOptions::new()
             .read(true)
             .create(true)
@@ -62,7 +61,6 @@ impl<const INIT_SIZE: usize> DiskBytesRaw<INIT_SIZE> {
             data_path.push(format!("{:02x}", i));
 
             if data_path.exists() {
-                println!("opening {:?}", data_path);
                 let mapping = Mapping::open(&data_path, INIT_SIZE)?;
                 lanes.push(mapping);
             } else {
@@ -90,8 +88,6 @@ impl<const INIT_SIZE: usize> DiskBytesRaw<INIT_SIZE> {
         let (lane, offset) = Self::lane_and_ofs(offset);
         let lane_size = Self::lane_size(lane);
 
-        println!("in raw write {:?} {:?}", lane, offset);
-
         if offset + len > lane_size {
             // We cannot write in lane boundaries
             Ok(None)
@@ -100,12 +96,10 @@ impl<const INIT_SIZE: usize> DiskBytesRaw<INIT_SIZE> {
             let lanes = unsafe { &mut *lanes };
 
             while lanes.len() <= lane {
-                println!("lanes len, {}", lanes.len());
-
                 let i = lanes.len();
                 let mut data_path = self.root_path.clone();
                 data_path.push(format!("{:02x}", i));
-                println!("opening/creating {:?}", data_path);
+
                 let mapping = Mapping::open(&data_path, Self::lane_size(i))?;
                 lanes.push(mapping);
             }
@@ -179,7 +173,7 @@ mod test {
     }
 
     #[test]
-    fn test_lane_maths_trivial() {
+    fn test_lane_math_trivial() {
         assert_eq!(DiskBytesRaw::<32>::lane_and_ofs(0), (0, 0));
         assert_eq!(DiskBytesRaw::<32>::lane_and_ofs(31), (0, 31));
         assert_eq!(DiskBytesRaw::<32>::lane_and_ofs(32), (1, 0));
@@ -189,7 +183,7 @@ mod test {
     }
 
     #[test]
-    fn test_lane_maths() {
+    fn test_lane_math() {
         for i in 0..1024 * 1024 {
             assert_eq!(
                 DiskBytesRaw::<32>::lane_and_ofs(i),

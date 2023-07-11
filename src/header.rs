@@ -30,8 +30,6 @@ impl Header {
         let mut pb = PathBuf::from(path.as_ref());
         pb.push("header");
 
-        println!("opening {:?}", pb);
-
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)

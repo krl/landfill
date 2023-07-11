@@ -56,8 +56,6 @@ impl Journal {
         let mut pb = PathBuf::from(path.as_ref());
         pb.push("journal");
 
-        println!("opening {:?}", pb);
-
         let file = OpenOptions::new()
             .read(true)
             .write(true)
