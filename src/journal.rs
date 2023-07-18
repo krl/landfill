@@ -1,58 +1,62 @@
 use std::fs::{File, OpenOptions};
+use std::hash::{Hash, Hasher};
 use std::io::{self};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use bytemuck::{Pod, Zeroable};
+use bytemuck::Pod;
+use bytemuck_derive::*;
 use memmap2::MmapMut;
 use parking_lot::Mutex;
+use seahash::SeaHasher;
 
-use crate::header::Header;
-
-const JOURNAL_LEN: usize = 16;
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct JournalEntry {
-    value: u64,
+#[derive(Clone, Copy, Zeroable, Pod)]
+#[repr(C, packed)]
+struct JournalEntry<T> {
     checksum: u64,
+    value: T,
 }
 
-impl JournalEntry {
-    fn new(value: u64, header: Header) -> Self {
-        let checksum = header.checksum(value);
+impl<T> JournalEntry<T>
+where
+    T: Hash + Pod,
+{
+    #[inline(always)]
+    fn checksum(value: &T) -> u64 {
+        let mut hasher = SeaHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn new(value: T) -> Self {
+        let checksum = Self::checksum(&value);
         JournalEntry { value, checksum }
     }
 
-    fn get(&self, header: Header) -> Option<u64> {
-        let checksum = header.checksum(self.value);
-        if checksum == self.checksum {
-            Some(self.value)
+    fn get(&self) -> Option<T> {
+        let value = self.value;
+        if Self::checksum(&value) == self.checksum {
+            Some(value)
         } else {
             None
         }
     }
 }
 
-unsafe impl Zeroable for JournalEntry {}
-unsafe impl Pod for JournalEntry {}
-
-struct JournalInner {
-    #[allow(unused)]
-    file: File,
-    map: MmapMut,
-    latest_entry_index: usize,
-    header: Header,
+enum JournalInner<T, const SIZE: usize> {
+    Disk {
+        _file: File,
+        map: MmapMut,
+        latest_entry_index: usize,
+    },
+    Mem(T),
 }
 
-#[derive(Clone)]
-pub(crate) struct Journal(Arc<Mutex<JournalInner>>);
-
-impl Journal {
-    pub(crate) fn open<P: AsRef<Path>>(
-        path: P,
-        header: Header,
-    ) -> io::Result<Journal> {
+pub struct Journal<T, const SIZE: usize>(Mutex<JournalInner<T, SIZE>>);
+impl<T, const SIZE: usize> Journal<T, SIZE>
+where
+    T: Pod + Clone + Hash + Ord + Default,
+{
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut pb = PathBuf::from(path.as_ref());
         pb.push("journal");
 
@@ -62,69 +66,89 @@ impl Journal {
             .create(true)
             .open(&pb)?;
 
-        const JOURNAL_BYTES: usize =
-            std::mem::size_of::<JournalEntry>() * JOURNAL_LEN;
-
-        file.set_len(JOURNAL_BYTES as u64)?;
+        file.set_len(SIZE as u64)?;
 
         let mut map = unsafe { MmapMut::map_mut(&file)? };
 
         let journal_entry_slice = map.as_mut();
-        let journal_entries: &mut [JournalEntry] =
+        let journal_entries: &mut [JournalEntry<T>] =
             &mut bytemuck::cast_slice_mut(journal_entry_slice);
 
-        assert_eq!(journal_entries.len(), JOURNAL_LEN);
-
         let mut latest_entry_index = 0;
-        let mut candidate = 0;
+        let mut candidate = T::default();
 
-        for i in 0..JOURNAL_LEN {
-            if let Some(val) = journal_entries[i].get(header) {
+        for (i, entry) in journal_entries.iter().enumerate() {
+            if let Some(val) = entry.get() {
                 if val > candidate {
                     latest_entry_index = i;
-                    candidate = val;
+                    candidate = val.clone();
                 }
             }
         }
 
-        let inner = JournalInner {
-            file,
+        Ok(Journal(Mutex::new(JournalInner::Disk {
+            _file: file,
             map,
             latest_entry_index,
-            header,
-        };
-
-        Ok(Journal(Arc::new(Mutex::new(inner))))
+        })))
     }
 
-    pub fn update<F>(&self, f: F)
+    pub fn ephemeral() -> Self {
+        Journal(Mutex::new(JournalInner::Mem(T::default())))
+    }
+
+    pub fn update<F, R>(&self, f: F) -> io::Result<R>
     where
-        F: FnOnce(u64) -> u64,
+        F: FnOnce(&mut T) -> R,
     {
-        self.0.lock().update(f);
+        self.0.lock().update(f)
     }
 }
 
-impl JournalInner {
-    pub fn update<F>(&mut self, f: F)
+impl<T, const SIZE: usize> JournalInner<T, SIZE>
+where
+    T: Pod + Clone + Hash + Ord,
+{
+    pub fn update<F, R>(&mut self, f: F) -> io::Result<R>
     where
-        F: FnOnce(u64) -> u64,
+        F: FnOnce(&mut T) -> R,
     {
-        let old = self.read();
-        let entries: &mut [JournalEntry] =
-            bytemuck::cast_slice_mut(&mut self.map[..]);
-        let next_entry = (self.latest_entry_index + 1) % JOURNAL_LEN;
-        let new_value = f(old);
-        entries[next_entry] = JournalEntry::new(new_value, self.header);
-        self.latest_entry_index = next_entry;
-    }
+        match self {
+            JournalInner::Disk {
+                map,
+                latest_entry_index,
+                ..
+            } => {
+                let entries: &mut [JournalEntry<T>] =
+                    bytemuck::cast_slice_mut(&mut map[..]);
+                let entry = &mut entries[*latest_entry_index];
 
-    fn current_entry(&self) -> &JournalEntry {
-        let entries: &[JournalEntry] = bytemuck::cast_slice(&self.map[..]);
-        &entries[self.latest_entry_index]
-    }
+                let mut value = entry.value;
+                let value_copy = entry.value;
 
-    pub fn read(&self) -> u64 {
-        self.current_entry().value
+                let next_entry = (*latest_entry_index + 1) % SIZE;
+
+                let res = f(&mut value);
+
+                assert!(
+                    value > value_copy,
+                    "Journal updates must be strictly incremental"
+                );
+
+                entries[next_entry] = JournalEntry::new(value);
+                map.flush()?;
+                *latest_entry_index = next_entry;
+                Ok(res)
+            }
+            JournalInner::Mem(value) => {
+                let value_copy = value.clone();
+                let res = f(value);
+                assert!(
+                    *value > value_copy,
+                    "Journal updates must be strictly incremental"
+                );
+                Ok(res)
+            }
+        }
     }
 }

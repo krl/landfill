@@ -1,18 +1,17 @@
 [package]
-name = "landfill"
+name = "diskjockey"
+description = "Various tools for dealing with on-disk datas"
 version = "0.1.0"
 edition = "2021"
 license = "GPLv3"
 
 [dependencies]
-arr_macro = "0.2.1"
-arrayvec = "0.7.4"
-blake3 = { version = "1.4.0", features = ["traits-preview"] }
 bytemuck = "1.13.1"
+bytemuck_derive = "1.4.1"
 memmap2 = "0.7.1"
 parking_lot = "0.12.1"
-rand = "0.8.5"
 seahash = "4.1.0"
 
 [dev-dependencies]
+rand = "0.8.5"
 tempfile = "3.6.0"
