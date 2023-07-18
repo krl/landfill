@@ -114,8 +114,14 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
         Ok(())
     }
 
-    pub fn find_space_for(&self, _offset: u64, _len: usize) -> u64 {
-        todo!()
+    pub fn find_space_for(&self, offset: u64, len: usize) -> u64 {
+        let (lane_nr, inner_offset) = Self::lane_nr_and_ofs(offset);
+        let lane_size = Self::lane_size(lane_nr);
+        if inner_offset + len as u64 > lane_size {
+            offset + (lane_size - inner_offset)
+        } else {
+            offset
+        }
     }
 
     pub unsafe fn request_write(

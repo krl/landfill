@@ -8,11 +8,8 @@ use rand::{seq::SliceRandom, Rng};
 #[test]
 fn array_trivial() -> Result<(), std::io::Error> {
     let da = Array::<_, 1024>::ephemeral()?;
-
     da.with_mut(39, |m| *m = 32)?;
-
     assert_eq!(*da.get(39).unwrap(), 32);
-
     Ok(())
 }
 
@@ -21,8 +18,8 @@ fn array_stress() -> Result<(), std::io::Error> {
     const N_THREADS: usize = 16;
     const WRITES_PER_THREAD: usize = 512;
 
-    // We let some slots empty to not have to randomly find a single
-    // empty slot while writing
+    // We let half of the slots stay empty to easily find empty slots when
+    // searching randomly
     const N_SLOTS: usize = N_THREADS * WRITES_PER_THREAD * 2;
 
     // setup
@@ -31,6 +28,7 @@ fn array_stress() -> Result<(), std::io::Error> {
     #[repr(C)]
     struct Record {
         origin: u32,
+        // For padding and destinguising zero-zero-records from `Zeroable::zeroed()`
         marker: u32,
         value: u64,
     }
