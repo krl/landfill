@@ -1,9 +1,10 @@
 [package]
 name = "landfill"
 description = "Various types for dealing with on-disk data"
+repository = "https://github.com/krl/landfill"
 version = "0.2.0"
 edition = "2021"
-license = "GPLv3"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 bytemuck = "1.13.1"
