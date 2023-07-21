@@ -1,5 +1,5 @@
 use std::cell::UnsafeCell;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::mem;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,7 @@ impl Lane {
         unsafe { &*self.map.get() }
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn bytes_mut(&self) -> &mut [u8] {
         unsafe { &mut *self.map.get() }
     }
@@ -65,24 +66,24 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         const LOCK: OnceLock<Lane> = OnceLock::new();
         let lanes = [LOCK; N_LANES];
-
         let pb = PathBuf::from(path.as_ref());
-        fs::create_dir_all(&pb)?;
 
-        for i in 0..N_LANES {
+        for (i, lane) in lanes.iter().enumerate() {
             let mut data_path = pb.clone();
             data_path.push(format!("{:02x}", i));
 
             if data_path.exists() {
-                let lane = Lane::disk(data_path, INIT_SIZE)?;
-                // the result here is only ever returning the mapping
-                // we just opened if it is already set, and is safe to just
-                // drop.
+                // `OnceLock::set` returns the value you tried to set, had it
+                // already been initialized
                 //
-                // However, since this is always the first time this `OnceLock`
-                // is touched, due to being created just above, this will never
-                // error
-                let _ = lanes[i].set(lane);
+                // This is however always the first time this `OnceLock` is touched,
+                // due to being created just above, thus this will never error.
+                if lane
+                    .set(Lane::disk(data_path, Self::lane_size(i))?)
+                    .is_err()
+                {
+                    unreachable!()
+                }
             }
         }
 
@@ -114,13 +115,14 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
         Ok(())
     }
 
-    pub fn find_space_for(&self, offset: u64, len: usize) -> u64 {
+    pub fn find_space_for(offset: u64, len: usize) -> u64 {
         let (lane_nr, inner_offset) = Self::lane_nr_and_ofs(offset);
         let lane_size = Self::lane_size(lane_nr);
-        if inner_offset + len as u64 > lane_size {
-            offset + (lane_size - inner_offset)
-        } else {
+        if inner_offset + len as u64 <= lane_size {
             offset
+        } else {
+            // tail-recurse
+            Self::find_space_for(offset + (lane_size - inner_offset), len)
         }
     }
 
@@ -166,8 +168,9 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
             let lane_initialized = lane_initialized
                 .expect("Above logic will always assure an initialized lane");
 
-            return Ok(&mut lane_initialized.bytes_mut()[offset as usize..]
-                [..len as usize]);
+            return Ok(
+                &mut lane_initialized.bytes_mut()[offset as usize..][..len]
+            );
         }
     }
 
@@ -178,12 +181,11 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
         if offset + len as u64 > lane_size {
             // We cannot read in lane boundaries
             None
+        } else if let Some(lane) = self.lanes[lane].get() {
+            let lane_bytes = lane.bytes();
+            Some(&lane_bytes[offset as usize..offset as usize + len as usize])
         } else {
-            if let Some(lane) = self.lanes[lane].get() {
-                Some(&lane.bytes()[offset as usize..][..len as usize])
-            } else {
-                None
-            }
+            None
         }
     }
 
@@ -284,6 +286,21 @@ mod test {
         let read = db.read(0, len as u32).unwrap();
 
         assert_eq!(read, msg);
+
+        Ok(())
+    }
+
+    #[test]
+    fn find_space() -> io::Result<()> {
+        assert_eq!(DiskBytes::<1>::find_space_for(0, 0), 0);
+        assert_eq!(DiskBytes::<1>::find_space_for(0, 1), 0);
+        assert_eq!(DiskBytes::<1>::find_space_for(1, 1), 1);
+
+        assert_eq!(DiskBytes::<1>::find_space_for(2, 1), 2);
+        assert_eq!(DiskBytes::<1>::find_space_for(2, 2), 3);
+
+        assert_eq!(DiskBytes::<1>::find_space_for(100, 100), 127);
+        assert_eq!(DiskBytes::<1>::find_space_for(0, 100), 127);
 
         Ok(())
     }

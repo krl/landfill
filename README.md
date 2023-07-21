@@ -32,6 +32,8 @@ It works with a finite set of RWLocks (`N_LOCKS`), that are mapped to the index 
 
 Reads take a readlock, and return guards, whereas writes can only happen in closures passed into the `with_mut` function. This is to avoid the possibility of deadlocking when trying to hold multiple mutable references at once.
 
+Note that values stored consisting of all zeroes will be considered empty space, and return `None` on `get`, so make sure you use `NonZeroUsize` or similar methods to tag your types.
+
 # AppendOnly
 
 An append only virtual file of bytes, it keeps an internal journal on how many bytes have already been written, and the data written _never moves_ in memory, so it can safely hand out &[u8] references that live as long as the struct itself.

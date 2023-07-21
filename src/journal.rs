@@ -51,11 +51,17 @@ enum JournalInner<T, const SIZE: usize> {
     Mem(T),
 }
 
+/// A crash-resistant register of strictly incrementing values
+///
+/// Useful for keeping track of writeheads into other collections, specifically
+/// `AppendOnly`
 pub struct Journal<T, const SIZE: usize>(Mutex<JournalInner<T, SIZE>>);
 impl<T, const SIZE: usize> Journal<T, SIZE>
 where
     T: Pod + Clone + Hash + Ord + Default,
 {
+    /// Open or create a new journal at `path`, this is a single file and
+    /// will not create any directories
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let mut pb = PathBuf::from(path.as_ref());
         pb.push("journal");
@@ -72,7 +78,7 @@ where
 
         let journal_entry_slice = map.as_mut();
         let journal_entries: &mut [JournalEntry<T>] =
-            &mut bytemuck::cast_slice_mut(journal_entry_slice);
+            bytemuck::cast_slice_mut(journal_entry_slice);
 
         let mut latest_entry_index = 0;
         let mut candidate = T::default();
@@ -81,7 +87,7 @@ where
             if let Some(val) = entry.get() {
                 if val > candidate {
                     latest_entry_index = i;
-                    candidate = val.clone();
+                    candidate = val;
                 }
             }
         }
@@ -93,10 +99,18 @@ where
         })))
     }
 
+    /// Create an ephemeral `Journal`, note that this is nothing more than
+    /// a mutex-wrapped `T`
     pub fn ephemeral() -> Self {
         Journal(Mutex::new(JournalInner::Mem(T::default())))
     }
 
+    /// Takes a closure with mutable access to the guarded value
+    ///
+    /// PANICKING
+    ///
+    /// This method will panic if the updated value compares less as the old one,
+    /// so make sure that it gets set equal to or greater than its old value.
     pub fn update<F, R>(&self, f: F) -> io::Result<R>
     where
         F: FnOnce(&mut T) -> R,
@@ -109,7 +123,7 @@ impl<T, const SIZE: usize> JournalInner<T, SIZE>
 where
     T: Pod + Clone + Hash + Ord,
 {
-    pub fn update<F, R>(&mut self, f: F) -> io::Result<R>
+    fn update<F, R>(&mut self, f: F) -> io::Result<R>
     where
         F: FnOnce(&mut T) -> R,
     {
@@ -124,15 +138,15 @@ where
                 let entry = &mut entries[*latest_entry_index];
 
                 let mut value = entry.value;
-                let value_copy = entry.value;
+                let old_value = entry.value;
 
                 let next_entry = (*latest_entry_index + 1) % SIZE;
 
                 let res = f(&mut value);
 
                 assert!(
-                    value > value_copy,
-                    "Journal updates must be strictly incremental"
+                    value >= old_value,
+                    "Journal updates must be incremental"
                 );
 
                 entries[next_entry] = JournalEntry::new(value);
@@ -141,7 +155,7 @@ where
                 Ok(res)
             }
             JournalInner::Mem(value) => {
-                let value_copy = value.clone();
+                let value_copy = *value;
                 let res = f(value);
                 assert!(
                     *value > value_copy,

@@ -2,8 +2,11 @@ use std::sync::Arc;
 
 use bytemuck::Zeroable;
 use bytemuck_derive::*;
-use diskjockey::Array;
+use landfill::Array;
 use rand::{seq::SliceRandom, Rng};
+
+mod with_temp_path;
+use with_temp_path::with_temp_path;
 
 #[test]
 fn array_trivial() -> Result<(), std::io::Error> {
@@ -28,7 +31,8 @@ fn array_stress() -> Result<(), std::io::Error> {
     #[repr(C)]
     struct Record {
         origin: u32,
-        // For padding and destinguising zero-zero-records from `Zeroable::zeroed()`
+        // For padding and destinguising the zero offset,
+        // zero length record (0u64, 0u32) from `Zeroable::zeroed()`
         marker: u32,
         value: u64,
     }
@@ -120,4 +124,27 @@ fn array_stress() -> Result<(), std::io::Error> {
     }
 
     Ok(())
+}
+
+#[test]
+fn array_persist_restore() -> Result<(), std::io::Error> {
+    with_temp_path(|path| {
+        {
+            let ao = Array::<u32, 1024>::open(path)?;
+
+            for i in 1..=1024 {
+                ao.with_mut(i, |slot| *slot = i as u32)?;
+            }
+        }
+
+        // re-open
+
+        let ao = Array::<u32, 1024>::open(path)?;
+
+        for i in 1..=1024 {
+            assert_eq!(*ao.get(i).unwrap(), i as u32)
+        }
+
+        Ok(())
+    })
 }
