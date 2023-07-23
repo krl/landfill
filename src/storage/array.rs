@@ -1,13 +1,13 @@
+use std::io;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
-use std::path::Path;
-use std::{fs, io};
 
 use bytemuck::{Pod, Zeroable};
 use parking_lot::{RwLock, RwLockReadGuard};
 
 use super::bytes::DiskBytes;
+use crate::Landfill;
 
 const N_LOCKS: usize = 256;
 
@@ -35,40 +35,29 @@ impl<'a, T> Deref for ArrayGuard<'a, T> {
     }
 }
 
+impl<T, const INIT_SIZE: u64> TryFrom<&Landfill> for Array<T, INIT_SIZE> {
+    type Error = io::Error;
+
+    /// Opens a new array at specified path, creating a directory if neccesary
+    fn try_from(landfill: &Landfill) -> io::Result<Self> {
+        let landfill = landfill.branch("array");
+        let bytes = DiskBytes::try_from(&landfill)?;
+
+        const MUTEX: RwLock<()> = RwLock::new(());
+        let locks = [MUTEX; N_LOCKS];
+
+        Ok(Array {
+            bytes,
+            locks,
+            _marker: PhantomData,
+        })
+    }
+}
+
 impl<T, const INIT_SIZE: u64> Array<T, INIT_SIZE>
 where
     T: Zeroable + Pod + PartialEq,
 {
-    /// Opens a new array at specified path, creating a directory if neccesary
-    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        fs::create_dir_all(path.as_ref())?;
-
-        let bytes = DiskBytes::open(path)?;
-
-        const MUTEX: RwLock<()> = RwLock::new(());
-        let locks = [MUTEX; N_LOCKS];
-
-        Ok(Array {
-            bytes,
-            locks,
-            _marker: PhantomData,
-        })
-    }
-
-    /// Creates an in-memory array backed by anonymous memory maps
-    pub fn ephemeral() -> io::Result<Self> {
-        let bytes = DiskBytes::ephemeral()?;
-
-        const MUTEX: RwLock<()> = RwLock::new(());
-        let locks = [MUTEX; N_LOCKS];
-
-        Ok(Array {
-            bytes,
-            locks,
-            _marker: PhantomData,
-        })
-    }
-
     /// Flush the in-memory changes to disk
     ///
     /// This call is blocking until the writes are complete

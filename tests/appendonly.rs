@@ -1,11 +1,12 @@
-use landfill::AppendOnly;
+use landfill::{AppendOnly, Landfill};
 
 mod with_temp_path;
 use with_temp_path::with_temp_path;
 
 #[test]
 fn appendonly_trivial() -> Result<(), std::io::Error> {
-    let ao = AppendOnly::<1024>::ephemeral()?;
+    let lf = Landfill::ephemeral()?;
+    let ao = AppendOnly::<1024>::try_from(&lf)?;
 
     let msg_a = b"hello word";
     let msg_b = b"hello world!";
@@ -34,7 +35,8 @@ fn appendonly_save_restore() -> Result<(), std::io::Error> {
         let msg_b = b"hello world!";
 
         {
-            let ao = AppendOnly::<1024>::open(path)?;
+            let lf = Landfill::open(path)?;
+            let ao = AppendOnly::<1024>::try_from(&lf)?;
 
             rec_a = ao.write(msg_a)?;
 
@@ -48,9 +50,11 @@ fn appendonly_save_restore() -> Result<(), std::io::Error> {
             assert_eq!(slice_b, msg_b);
         }
 
+        let lf = Landfill::open(path)?;
+
         // re-open
 
-        let ao = AppendOnly::<1024>::open(path)?;
+        let ao = AppendOnly::<1024>::try_from(&lf)?;
         assert_eq!(ao.get(rec_a), msg_a);
         assert_eq!(ao.get(rec_b), msg_b);
 
@@ -68,7 +72,8 @@ fn appendonly_save_restore_skip_files() -> Result<(), std::io::Error> {
         let msg_b = b"hello world!";
 
         {
-            let ao = AppendOnly::<1>::open(path)?;
+            let lf = Landfill::open(path)?;
+            let ao = AppendOnly::<1>::try_from(&lf)?;
 
             rec_a = ao.write(msg_a)?;
 
@@ -84,7 +89,9 @@ fn appendonly_save_restore_skip_files() -> Result<(), std::io::Error> {
 
         // re-open
 
-        let ao = AppendOnly::<1>::open(path)?;
+        let lf = Landfill::open(path)?;
+        let ao = AppendOnly::<1>::try_from(&lf)?;
+
         assert_eq!(ao.get(rec_a), msg_a);
         assert_eq!(ao.get(rec_b), msg_b);
 

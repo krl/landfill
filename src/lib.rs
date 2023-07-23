@@ -15,4 +15,4 @@ mod structures;
 pub use structures::*;
 
 mod landfill;
-pub use landfill::Landfill;
+pub use landfill::{Landfill, MappedFile};

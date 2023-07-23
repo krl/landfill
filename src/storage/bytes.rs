@@ -1,110 +1,47 @@
-use std::cell::UnsafeCell;
-use std::fs::{File, OpenOptions};
 use std::io;
 use std::mem;
-use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use memmap2::MmapMut;
-use parking_lot::Mutex;
+use crate::{Landfill, MappedFile};
 
 const N_LANES: usize = 32;
 
-struct Lane {
-    #[allow(unused)]
-    file: Option<File>,
-    map: UnsafeCell<MmapMut>,
-}
-
-impl Lane {
-    fn anon(size: u64) -> io::Result<Self> {
-        let map = UnsafeCell::new(MmapMut::map_anon(size as usize)?);
-        Ok(Lane { file: None, map })
-    }
-
-    fn disk<P: AsRef<Path>>(path: P, size: u64) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .create(true)
-            .write(true)
-            .open(path.as_ref())?;
-
-        file.set_len(size)?;
-        let map = UnsafeCell::new(unsafe { MmapMut::map_mut(&file)? });
-        Ok(Lane {
-            file: Some(file),
-            map,
-        })
-    }
-
-    fn bytes(&self) -> &[u8] {
-        unsafe { &*self.map.get() }
-    }
-
-    #[allow(clippy::mut_from_ref)]
-    fn bytes_mut(&self) -> &mut [u8] {
-        unsafe { &mut *self.map.get() }
-    }
-
-    fn flush(&self) -> io::Result<()> {
-        if self.file.is_some() {
-            unsafe { (*self.map.get()).flush() }
-        } else {
-            // We don't need to flush anon memory maps
-            Ok(())
-        }
-    }
-}
-
 pub(crate) struct DiskBytes<const INIT_SIZE: u64> {
-    root_path: Option<PathBuf>,
-    lanes: [OnceLock<Lane>; N_LANES],
-    io_mutex: Mutex<()>,
+    landfill: Landfill,
+    lanes: [OnceLock<MappedFile>; N_LANES],
 }
 
-impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
-    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        const LOCK: OnceLock<Lane> = OnceLock::new();
+impl<const INIT_SIZE: u64> TryFrom<&Landfill> for DiskBytes<INIT_SIZE> {
+    type Error = io::Error;
+
+    fn try_from(landfill: &Landfill) -> Result<Self, Self::Error> {
+        const LOCK: OnceLock<MappedFile> = OnceLock::new();
         let lanes = [LOCK; N_LANES];
-        let pb = PathBuf::from(path.as_ref());
 
         for (i, lane) in lanes.iter().enumerate() {
-            let mut data_path = pb.clone();
-            data_path.push(format!("{:02x}", i));
-
-            if data_path.exists() {
+            if let Some(lane_file) =
+                landfill.map_file(&format!("{:02x}", i), Self::lane_size(i))?
+            {
                 // `OnceLock::set` returns the value you tried to set, had it
                 // already been initialized
                 //
                 // This is however always the first time this `OnceLock` is touched,
                 // due to being created just above, thus this will never error.
-                if lane
-                    .set(Lane::disk(data_path, Self::lane_size(i))?)
-                    .is_err()
-                {
+
+                if lane.set(lane_file).is_err() {
                     unreachable!()
                 }
             }
         }
 
         Ok(DiskBytes {
-            root_path: Some(pb),
+            landfill: landfill.clone(),
             lanes,
-            io_mutex: Mutex::new(()),
         })
     }
+}
 
-    pub fn ephemeral() -> io::Result<Self> {
-        const LOCK: OnceLock<Lane> = OnceLock::new();
-        let lanes = [LOCK; N_LANES];
-
-        Ok(DiskBytes {
-            root_path: None,
-            lanes,
-            io_mutex: Mutex::new(()),
-        })
-    }
-
+impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
     pub fn flush(&self) -> io::Result<()> {
         for lane in &self.lanes {
             if let Some(lane) = lane.get() {
@@ -143,25 +80,23 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
             let mut lane_initialized = self.lanes[lane_nr].get();
 
             // Make sure the lane is initialized
-            if lane_initialized.is_none() {
-                let _guard = self.io_mutex.lock();
-                lane_initialized = self.lanes[lane_nr].get();
-                // After io_mutex is taken, we need to check again
-                // that no other thread has come before us to initialize the
-                // lane
-                if lane_initialized.is_none() {
-                    let lane = if let Some(root_path) = &self.root_path {
-                        let mut data_path = root_path.clone();
-                        data_path.push(format!("{:02x}", lane_nr));
-                        Lane::disk(&data_path, lane_size)?
-                    } else {
-                        Lane::anon(lane_size)?
-                    };
-                    // Again, this error should never trigger since we have locked
-                    // our io_mutex in this thread specifically
-                    let _ = self.lanes[lane_nr].set(lane);
+            while lane_initialized.is_none() {
+                let name = format!("{:02x}", lane_nr);
+
+                if let Some(lane_file) =
+                    self.landfill.map_file_create(&name, lane_size)?
+                {
+                    // Since we got the file from the landfill, we can be sure
+                    // that no other thread has been able to progress here
+                    //
+                    // Initializing here will thus always succeed, and we can ignore
+                    // the `Result` of setting te once lock
+                    let _ = self.lanes[lane_nr].set(lane_file);
                     lane_initialized =
                         Some(self.lanes[lane_nr].get().expect("Just set above"))
+                } else {
+                    // spin
+                    lane_initialized = self.lanes[lane_nr].get();
                 }
             }
 
@@ -182,7 +117,7 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
             // We cannot read in lane boundaries
             None
         } else if let Some(lane) = self.lanes[lane].get() {
-            let lane_bytes = lane.bytes();
+            let lane_bytes = lane.as_ref();
             Some(&lane_bytes[offset as usize..offset as usize + len as usize])
         } else {
             None
@@ -276,12 +211,15 @@ mod test {
 
     #[test]
     fn simple_write_read() -> io::Result<()> {
-        let db = DiskBytes::<1024>::ephemeral()?;
+        let landfill = Landfill::ephemeral()?;
+        let db = DiskBytes::<1024>::try_from(&landfill)?;
 
         let msg = b"hello world";
         let len = msg.len();
 
         unsafe { db.request_write(0, len)? }.copy_from_slice(msg);
+
+        println!("snuvan");
 
         let read = db.read(0, len as u32).unwrap();
 

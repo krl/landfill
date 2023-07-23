@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytemuck::Zeroable;
 use bytemuck_derive::*;
-use landfill::Array;
+use landfill::{Array, Landfill};
 use rand::{seq::SliceRandom, Rng};
 
 mod with_temp_path;
@@ -10,7 +10,8 @@ use with_temp_path::with_temp_path;
 
 #[test]
 fn array_trivial() -> Result<(), std::io::Error> {
-    let da = Array::<_, 1024>::ephemeral()?;
+    let lf = Landfill::ephemeral()?;
+    let da = Array::<_, 1024>::try_from(&lf)?;
     da.with_mut(39, |m| *m = 32)?;
     assert_eq!(*da.get(39).unwrap(), 32);
     Ok(())
@@ -66,7 +67,8 @@ fn array_stress() -> Result<(), std::io::Error> {
     let mut writer_threads = vec![];
     let mut reader_threads = vec![];
 
-    let da = Arc::new(Array::<_, 1024>::ephemeral()?);
+    let lf = Landfill::ephemeral()?;
+    let da = Arc::new(Array::<_, 1024>::try_from(&lf)?);
 
     for mut writer_data in writer_datasets.drain(..) {
         let da_write = da.clone();
@@ -130,7 +132,9 @@ fn array_stress() -> Result<(), std::io::Error> {
 fn array_persist_restore() -> Result<(), std::io::Error> {
     with_temp_path(|path| {
         {
-            let ao = Array::<u32, 1024>::open(path)?;
+            let lf = Landfill::open(path)?;
+
+            let ao = Array::<u32, 1024>::try_from(&lf)?;
 
             for i in 1..=1024 {
                 ao.with_mut(i, |slot| *slot = i as u32)?;
@@ -139,7 +143,8 @@ fn array_persist_restore() -> Result<(), std::io::Error> {
 
         // re-open
 
-        let ao = Array::<u32, 1024>::open(path)?;
+        let lf = Landfill::open(path)?;
+        let ao = Array::<u32, 1024>::try_from(&lf)?;
 
         for i in 1..=1024 {
             assert_eq!(*ao.get(i).unwrap(), i as u32)
