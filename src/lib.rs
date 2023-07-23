@@ -8,13 +8,11 @@
 // to allow initialization of static arrays of Locks
 #![allow(clippy::declare_interior_mutable_const)]
 
-mod appendonly;
-mod array;
-mod bytes;
-mod entropy;
-mod journal;
+mod storage;
+pub use storage::*;
 
-pub use appendonly::AppendOnly;
-pub use array::Array;
-pub use entropy::Entropy;
-pub use journal::Journal;
+mod structures;
+pub use structures::*;
+
+mod landfill;
+pub use landfill::Landfill;

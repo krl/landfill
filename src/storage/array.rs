@@ -7,7 +7,7 @@ use std::{fs, io};
 use bytemuck::{Pod, Zeroable};
 use parking_lot::{RwLock, RwLockReadGuard};
 
-use crate::bytes::DiskBytes;
+use super::bytes::DiskBytes;
 
 const N_LOCKS: usize = 256;
 

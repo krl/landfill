@@ -1,11 +1,11 @@
+use std::io;
 use std::path::{Path, PathBuf};
-use std::{fs, io};
 
 use bytemuck_derive::*;
 
-use crate::bytes::DiskBytes;
-use crate::entropy::{Entropy, Tag};
-use crate::journal::Journal;
+use super::bytes::DiskBytes;
+use crate::Journal;
+use crate::{Entropy, Tag};
 
 /// AppendOnly
 ///
@@ -39,9 +39,7 @@ impl<const INIT_SIZE: u64> AppendOnly<INIT_SIZE> {
     /// This call will create a directory `data` at the given path, and store
     /// its files in this location
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<AppendOnly<INIT_SIZE>> {
-        let mut pb = PathBuf::from(path.as_ref());
-        pb.push("data");
-        fs::create_dir_all(&pb)?;
+        let pb = PathBuf::from(path.as_ref());
 
         let entropy = Entropy::open(&pb)?;
         let bytes = DiskBytes::open(&pb)?;
