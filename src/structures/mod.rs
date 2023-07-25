@@ -1,2 +1,2 @@
-mod hashmap;
-pub use hashmap::{HashMap, Search};
+mod smash;
+pub use smash::{Search, SmashMap};

@@ -2,11 +2,12 @@ use std::{
     cell::UnsafeCell,
     collections::HashSet,
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
+use bytemuck::{Pod, Zeroable};
 use memmap2::MmapMut;
 use parking_lot::Mutex;
 use tempfile::TempDir;
@@ -22,7 +23,7 @@ fn join_names(name1: &str, name2: &str) -> String {
 #[derive(Debug)]
 struct LandfillInner {
     dir_path: PathBuf,
-    already_mapped: Mutex<HashSet<String>>,
+    already_mapped: Mutex<HashSet<PathBuf>>,
     self_destruct_sequence_initiated: Mutex<bool>,
     // to manage the lifetime of temporary directories
     _temp_dir: Option<TempDir>,
@@ -95,28 +96,25 @@ impl Landfill {
         }
     }
 
+    fn full_path_for(&self, name: &str) -> PathBuf {
+        let mut full_path = PathBuf::from(&self.inner.dir_path);
+        full_path.push(&join_names(&self.name_prefix, name));
+        full_path
+    }
+
     fn map_file_inner(
         &self,
         name: &str,
         size: u64,
         create: bool,
     ) -> io::Result<Option<MappedFile>> {
-        println!("map file inner");
-        println!("{name} {size} {create}");
-        println!("{self:?}");
+        let full_path = self.full_path_for(name);
 
-        let full_name = join_names(&self.name_prefix, name);
         let mut already_mapped = self.inner.already_mapped.lock();
 
-        println!("full {full_name:?}");
-
-        if already_mapped.get(&full_name).is_some() {
-            println!("full name {full_name}");
+        if already_mapped.get(&full_path).is_some() {
             return Ok(None);
         }
-
-        let mut full_path = PathBuf::from(&self.inner.dir_path);
-        full_path.push(&full_name);
 
         let file = match (create, full_path.exists()) {
             (false, false) => return Ok(None),
@@ -136,9 +134,50 @@ impl Landfill {
         let map = UnsafeCell::new(unsafe { MmapMut::map_mut(&file)? });
 
         // Register that we have this file mapped
-        already_mapped.insert(full_name.clone());
+        already_mapped.insert(full_path);
 
         Ok(Some(MappedFile { _file: file, map }))
+    }
+
+    /// Reads a static file into type `T` if it exists
+    ///
+    /// Otherwise it calls the `init` closure to create and write a new
+    /// file containing the result.
+    pub fn get_static_or_init<Init, T>(
+        &self,
+        name: &str,
+        init: Init,
+    ) -> io::Result<T>
+    where
+        Init: Fn() -> T,
+        T: Zeroable + Pod,
+    {
+        let full_path = self.full_path_for(name);
+
+        if full_path.exists() {
+            let t = T::zeroed();
+            let t_slice = &mut [t];
+            let byte_slice: &mut [u8] = bytemuck::cast_slice_mut(t_slice);
+
+            let mut file = OpenOptions::new().read(true).open(&full_path)?;
+
+            file.read_exact(byte_slice)?;
+
+            Ok(t)
+        } else {
+            let t = init();
+            let t_slice = &[t];
+            let byte_slice: &[u8] = bytemuck::cast_slice(t_slice);
+
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(&full_path)?;
+
+            file.write_all(byte_slice)?;
+            file.flush()?;
+            Ok(t)
+        }
     }
 
     /// Open a file mapping, creating a file if none previously existed

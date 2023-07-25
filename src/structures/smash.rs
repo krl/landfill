@@ -6,16 +6,16 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::Entropy;
 
-const FANOUT: usize = 1024 * 4;
-
 use crate::Array;
 use crate::Landfill;
 
 struct SearchPattern<'a> {
     entropy: &'a Entropy,
     key_hash: u64,
-    depth: usize,
-    ofs: usize,
+    fanout: usize,
+    offset: usize,
+    retries: usize,
+    tries_limit: usize,
 }
 
 impl<'a> SearchPattern<'a> {
@@ -24,8 +24,10 @@ impl<'a> SearchPattern<'a> {
         SearchPattern {
             entropy,
             key_hash,
-            depth: 1,
-            ofs: 0,
+            fanout: 1024,
+            offset: 0,
+            retries: 0,
+            tries_limit: 1,
         }
     }
 }
@@ -34,18 +36,28 @@ impl<'a> Iterator for SearchPattern<'a> {
     type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let depth: usize = self.depth.into();
-        let _depth_fanout = FANOUT.pow(depth as u32);
-        let ofs_limit: usize = 1 >> depth;
+        // We add together the following quantities to calculate the next
+        // bucket index to use
+        let slot =
+			// the global offset
+			self.offset +
+			// the entropy state, modulo the currently active fanout
+			(self.key_hash % self.fanout as u64) as usize +
+		// how many sequential retries have been made
+			self.retries;
 
-        if self.ofs >= ofs_limit {
-            self.depth += 1;
-            // re-roll hash for next level
+        // FIXME: Calculating the next value eagerly is wasteful
+
+        self.retries += 1;
+        if self.retries == self.tries_limit {
+            self.offset += self.fanout;
+            self.fanout = self.fanout << 1;
+            self.tries_limit = self.tries_limit << 1;
             self.key_hash = self.entropy.checksum(&self.key_hash);
-            self.ofs = 0;
+            self.retries = 0;
         }
 
-        todo!()
+        Some(slot)
     }
 }
 
@@ -56,17 +68,21 @@ impl<'a> Iterator for SearchPattern<'a> {
 ///
 /// This type should generally not be used directly, but rather to implement other
 /// map-like datastructues
-pub struct HashMap<K, V> {
+pub struct SmashMap<K, V> {
     slots: Array<V, 1024>,
     entropy: Entropy,
     _marker: PhantomData<K>,
 }
 
-impl<K, V> TryFrom<Landfill> for HashMap<K, V> {
+impl<K, V> TryFrom<&Landfill> for SmashMap<K, V> {
     type Error = io::Error;
 
-    fn try_from(_landfill: Landfill) -> Result<Self, Self::Error> {
-        todo!()
+    fn try_from(landfill: &Landfill) -> Result<Self, Self::Error> {
+        Ok(SmashMap {
+            slots: Array::<V, 1024>::try_from(landfill)?,
+            entropy: Entropy::try_from(landfill)?,
+            _marker: PhantomData,
+        })
     }
 }
 
@@ -78,16 +94,16 @@ pub enum Search {
     Halt,
 }
 
-impl<K, V> HashMap<K, V>
+impl<K, V> SmashMap<K, V>
 where
     K: Hash,
     V: PartialEq + Zeroable + Pod,
 {
     /// Search the map and call the provided closure with the results
-    pub fn visit_candidates<Occupied>(&self, key: &K, on_occupied: Occupied)
+    pub fn get<Occupied>(&self, key: &K, mut on_occupied: Occupied)
     where
         K: Hash,
-        Occupied: Fn(&V) -> Search,
+        Occupied: FnMut(&V) -> Search,
     {
         let search = SearchPattern::new(&self.entropy, key);
 
@@ -96,6 +112,8 @@ where
                 if let Search::Halt = on_occupied(&*gotten) {
                     return;
                 }
+            } else {
+                return;
             }
         }
     }
@@ -106,7 +124,7 @@ where
     ///
     /// If no candidate was acceptable to the consumer, it is presented with
     /// an empty slot to write
-    pub fn find_space_for<Occupied, Empty>(
+    pub fn insert<Occupied, Empty>(
         &self,
         key: &K,
         on_occupied: Occupied,
@@ -133,7 +151,6 @@ where
                         if *mut_slot != V::zeroed() {
                             // another thread already wrote here before our
                             // write lock cleared
-
                             if let Search::Halt = on_occupied(mut_slot) {
                                 // and consumer was happy with this value
                                 finished = true;

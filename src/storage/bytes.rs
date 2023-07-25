@@ -219,8 +219,6 @@ mod test {
 
         unsafe { db.request_write(0, len)? }.copy_from_slice(msg);
 
-        println!("snuvan");
-
         let read = db.read(0, len as u32).unwrap();
 
         assert_eq!(read, msg);
