@@ -9,6 +9,9 @@ use seahash::SeaHasher;
 
 use crate::{Landfill, MappedFile};
 
+// journal is one page maximum
+const JOURNAL_SIZE: usize = 4096;
+
 #[derive(Clone, Copy, Zeroable, Pod)]
 #[repr(C, packed)]
 struct JournalEntry<T> {
@@ -42,7 +45,7 @@ where
     }
 }
 
-struct JournalInner<T, const SIZE: usize> {
+struct JournalInner<T> {
     mapping: MappedFile,
     latest_entry_index: usize,
     _marker: PhantomData<T>,
@@ -52,8 +55,9 @@ struct JournalInner<T, const SIZE: usize> {
 ///
 /// Useful for keeping track of writeheads into other collections, specifically
 /// `AppendOnly`
-pub struct Journal<T, const SIZE: usize>(Mutex<JournalInner<T, SIZE>>);
-impl<T, const SIZE: usize> Journal<T, SIZE>
+pub struct Journal<T>(Mutex<JournalInner<T>>);
+
+impl<T> Journal<T>
 where
     T: Pod + Clone + Hash + Ord + Default,
 {
@@ -71,7 +75,7 @@ where
     }
 }
 
-impl<T, const SIZE: usize> TryFrom<&Landfill> for Journal<T, SIZE>
+impl<T> TryFrom<&Landfill> for Journal<T>
 where
     T: Zeroable + Pod + Default + Hash + Ord,
 {
@@ -79,7 +83,7 @@ where
 
     fn try_from(landfill: &Landfill) -> io::Result<Self> {
         if let Some(mapping) =
-            landfill.map_file_create("journal", SIZE as u64)?
+            landfill.map_file_create("journal", JOURNAL_SIZE as u64)?
         {
             let journal_entry_slice = unsafe { mapping.bytes_mut() };
             let journal_entries: &mut [JournalEntry<T>] =
@@ -111,7 +115,7 @@ where
     }
 }
 
-impl<T, const SIZE: usize> JournalInner<T, SIZE>
+impl<T> JournalInner<T>
 where
     T: Pod + Clone + Hash + Ord,
 {
@@ -126,7 +130,7 @@ where
         let mut value = entry.value;
         let old_value = entry.value;
 
-        let next_entry = (self.latest_entry_index + 1) % SIZE;
+        let next_entry = (self.latest_entry_index + 1) % JOURNAL_SIZE;
 
         let res = f(&mut value);
 

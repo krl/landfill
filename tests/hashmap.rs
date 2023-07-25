@@ -1,13 +1,12 @@
 use std::io;
 
-use landfill::Landfill;
-use landfill::{HashMap, Search};
+use landfill::{Landfill, Search, SmashMap};
 
 #[test]
 fn trivial() -> Result<(), io::Error> {
     let lf = Landfill::ephemeral()?;
 
-    let h = HashMap::try_from(&lf)?;
+    let h = SmashMap::try_from(&lf)?;
 
     let msg: u32 = 1234;
 
@@ -28,7 +27,7 @@ const A_LOT: usize = 1024 * 128;
 #[test]
 fn a_lot() -> Result<(), io::Error> {
     let lf = Landfill::ephemeral()?;
-    let h = HashMap::try_from(&lf)?;
+    let h = SmashMap::try_from(&lf)?;
 
     for i in 0..A_LOT {
         let value = (i + 1) as u32;

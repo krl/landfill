@@ -17,8 +17,8 @@ const N_LOCKS: usize = 256;
 /// the value of `Self::zeroed()`, i.e a representation consisting of all zeroes,
 /// will be considered `None` for purpouses of accessing uninitialized elements of
 /// the array
-pub struct Array<T, const INIT_SIZE: u64> {
-    bytes: DiskBytes<INIT_SIZE>,
+pub struct Array<T> {
+    bytes: DiskBytes,
     locks: [RwLock<()>; N_LOCKS],
     _marker: PhantomData<T>,
 }
@@ -35,7 +35,7 @@ impl<'a, T> Deref for ArrayGuard<'a, T> {
     }
 }
 
-impl<T, const INIT_SIZE: u64> TryFrom<&Landfill> for Array<T, INIT_SIZE> {
+impl<T> TryFrom<&Landfill> for Array<T> {
     type Error = io::Error;
 
     /// Opens a new array at specified path, creating a directory if neccesary
@@ -54,7 +54,7 @@ impl<T, const INIT_SIZE: u64> TryFrom<&Landfill> for Array<T, INIT_SIZE> {
     }
 }
 
-impl<T, const INIT_SIZE: u64> Array<T, INIT_SIZE>
+impl<T> Array<T>
 where
     T: Zeroable + Pod + PartialEq,
 {

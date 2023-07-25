@@ -5,13 +5,14 @@ use std::sync::OnceLock;
 use crate::{Landfill, MappedFile};
 
 const N_LANES: usize = 32;
+const FIRST_FILE_SIZE: u64 = 4096;
 
-pub(crate) struct DiskBytes<const INIT_SIZE: u64> {
+pub(crate) struct DiskBytes {
     landfill: Landfill,
     lanes: [OnceLock<MappedFile>; N_LANES],
 }
 
-impl<const INIT_SIZE: u64> TryFrom<&Landfill> for DiskBytes<INIT_SIZE> {
+impl TryFrom<&Landfill> for DiskBytes {
     type Error = io::Error;
 
     fn try_from(landfill: &Landfill) -> Result<Self, Self::Error> {
@@ -41,7 +42,7 @@ impl<const INIT_SIZE: u64> TryFrom<&Landfill> for DiskBytes<INIT_SIZE> {
     }
 }
 
-impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
+impl DiskBytes {
     pub fn flush(&self) -> io::Result<()> {
         for lane in &self.lanes {
             if let Some(lane) = lane.get() {
@@ -68,8 +69,12 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
         offset: u64,
         len: usize,
     ) -> io::Result<&mut [u8]> {
+        println!("requesting write at {offset}, len {len}");
+
         let (lane_nr, offset) = Self::lane_nr_and_ofs(offset);
         let lane_size = Self::lane_size(lane_nr);
+
+        println!("lane_nr {lane_nr}, offset: {offset}, lane_size: {lane_size}");
 
         if offset + len as u64 > lane_size {
             Err(io::Error::new(
@@ -143,76 +148,38 @@ impl<const INIT_SIZE: u64> DiskBytes<INIT_SIZE> {
 
     fn lane_nr_and_ofs(offset: u64) -> (usize, u64) {
         let usize_bits = mem::size_of::<usize>() * 8;
-        let i = offset / INIT_SIZE + 1;
+        let i = offset / FIRST_FILE_SIZE + 1;
         let lane_nr = usize_bits - i.leading_zeros() as usize - 1;
-        let offset = offset - (2u64.pow(lane_nr as u32) - 1) * INIT_SIZE;
+        let offset = offset - (2u64.pow(lane_nr as u32) - 1) * FIRST_FILE_SIZE;
         (lane_nr, offset)
     }
 
     fn lane_size(lane: usize) -> u64 {
-        INIT_SIZE * 2u64.pow(lane as u32)
+        FIRST_FILE_SIZE * 2u64.pow(lane as u32)
     }
 }
 
-unsafe impl<const INIT_SIZE: u64> Send for DiskBytes<INIT_SIZE> {}
-unsafe impl<const INIT_SIZE: u64> Sync for DiskBytes<INIT_SIZE> {}
+unsafe impl Send for DiskBytes {}
+unsafe impl Sync for DiskBytes {}
 
 #[cfg(test)]
 mod test {
     use super::*;
 
     #[test]
-    fn test_lane_math_trivial() {
-        assert_eq!(DiskBytes::<32>::lane_nr_and_ofs(0), (0, 0));
-        assert_eq!(DiskBytes::<32>::lane_nr_and_ofs(31), (0, 31));
-        assert_eq!(DiskBytes::<32>::lane_nr_and_ofs(32), (1, 0));
-        assert_eq!(DiskBytes::<32>::lane_nr_and_ofs(64), (1, 32));
-        assert_eq!(DiskBytes::<32>::lane_nr_and_ofs(95), (1, 63));
-        assert_eq!(DiskBytes::<32>::lane_nr_and_ofs(96), (2, 0));
-    }
-
-    #[test]
     fn test_lane_math() {
         for i in 0..1024 * 256 {
             assert_eq!(
-                DiskBytes::<32>::lane_nr_and_ofs(i),
-                DiskBytes::<32>::lane_nr_and_ofs_slow_but_obviously_correct(i),
-            );
-
-            assert_eq!(
-                DiskBytes::<1>::lane_nr_and_ofs(i),
-                DiskBytes::<1>::lane_nr_and_ofs_slow_but_obviously_correct(i),
-            );
-
-            assert_eq!(
-                DiskBytes::<1024>::lane_nr_and_ofs(i),
-                DiskBytes::<1024>::lane_nr_and_ofs_slow_but_obviously_correct(
-                    i
-                ),
-            );
-
-            assert_eq!(
-                DiskBytes::<17>::lane_nr_and_ofs(i),
-                DiskBytes::<17>::lane_nr_and_ofs_slow_but_obviously_correct(i),
+                DiskBytes::lane_nr_and_ofs(i),
+                DiskBytes::lane_nr_and_ofs_slow_but_obviously_correct(i),
             );
         }
     }
 
     #[test]
-    fn test_lane_sizes() {
-        assert_eq!(DiskBytes::<32>::lane_size(0), 32);
-        assert_eq!(DiskBytes::<32>::lane_size(1), 64);
-        assert_eq!(DiskBytes::<32>::lane_size(2), 128);
-
-        assert_eq!(DiskBytes::<1024>::lane_size(0), 1024);
-        assert_eq!(DiskBytes::<1024>::lane_size(1), 2048);
-        assert_eq!(DiskBytes::<1024>::lane_size(2), 4096);
-    }
-
-    #[test]
     fn simple_write_read() -> io::Result<()> {
         let landfill = Landfill::ephemeral()?;
-        let db = DiskBytes::<1024>::try_from(&landfill)?;
+        let db = DiskBytes::try_from(&landfill)?;
 
         let msg = b"hello world";
         let len = msg.len();
@@ -228,15 +195,27 @@ mod test {
 
     #[test]
     fn find_space() -> io::Result<()> {
-        assert_eq!(DiskBytes::<1>::find_space_for(0, 0), 0);
-        assert_eq!(DiskBytes::<1>::find_space_for(0, 1), 0);
-        assert_eq!(DiskBytes::<1>::find_space_for(1, 1), 1);
+        let landfill = Landfill::ephemeral()?;
+        let db = DiskBytes::try_from(&landfill)?;
 
-        assert_eq!(DiskBytes::<1>::find_space_for(2, 1), 2);
-        assert_eq!(DiskBytes::<1>::find_space_for(2, 2), 3);
+        let mut ofs = 0u64;
 
-        assert_eq!(DiskBytes::<1>::find_space_for(100, 100), 127);
-        assert_eq!(DiskBytes::<1>::find_space_for(0, 100), 127);
+        for i in 0..1024 {
+            let mut bytes = vec![];
+
+            for o in 0..i {
+                bytes.push(o as u8);
+            }
+
+            let len = bytes.len();
+
+            let space_for = DiskBytes::find_space_for(ofs, len);
+
+            // this would error out if the space was not valid
+            unsafe { db.request_write(space_for, len)? };
+
+            ofs = space_for + len as u64;
+        }
 
         Ok(())
     }

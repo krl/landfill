@@ -69,7 +69,7 @@ impl<'a> Iterator for SearchPattern<'a> {
 /// This type should generally not be used directly, but rather to implement other
 /// map-like datastructues
 pub struct SmashMap<K, V> {
-    slots: Array<V, 1024>,
+    slots: Array<V>,
     entropy: Entropy,
     _marker: PhantomData<K>,
 }
@@ -79,7 +79,7 @@ impl<K, V> TryFrom<&Landfill> for SmashMap<K, V> {
 
     fn try_from(landfill: &Landfill) -> Result<Self, Self::Error> {
         Ok(SmashMap {
-            slots: Array::<V, 1024>::try_from(landfill)?,
+            slots: Array::<V>::try_from(landfill)?,
             entropy: Entropy::try_from(landfill)?,
             _marker: PhantomData,
         })
