@@ -69,12 +69,8 @@ impl DiskBytes {
         offset: u64,
         len: usize,
     ) -> io::Result<&mut [u8]> {
-        println!("requesting write at {offset}, len {len}");
-
         let (lane_nr, offset) = Self::lane_nr_and_ofs(offset);
         let lane_size = Self::lane_size(lane_nr);
-
-        println!("lane_nr {lane_nr}, offset: {offset}, lane_size: {lane_size}");
 
         if offset + len as u64 > lane_size {
             Err(io::Error::new(
@@ -200,7 +196,7 @@ mod test {
 
         let mut ofs = 0u64;
 
-        for i in 0..1024 {
+        for i in 0..1024 * 16 {
             let mut bytes = vec![];
 
             for o in 0..i {

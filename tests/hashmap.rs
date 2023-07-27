@@ -1,6 +1,6 @@
 use std::io;
 
-use landfill::{Landfill, Search, SmashMap};
+use landfill::{Landfill, SmashMap};
 
 #[test]
 fn trivial() -> Result<(), io::Error> {
@@ -10,13 +10,13 @@ fn trivial() -> Result<(), io::Error> {
 
     let msg: u32 = 1234;
 
-    h.insert(b"omg", |_| Search::Continue, || msg)?;
+    h.insert(b"omg", |s, _| s.proceed(), |_| Ok(msg))?;
 
-    h.get(b"omg", |candidate| {
+    h.get(b"omg", |s, candidate| {
         if *candidate != msg {
             panic!("oh no");
         }
-        Search::Continue
+        s.proceed()
     });
 
     Ok(())
@@ -31,18 +31,18 @@ fn a_lot() -> Result<(), io::Error> {
 
     for i in 0..A_LOT {
         let value = (i + 1) as u32;
-        h.insert(&value, |_| Search::Continue, || value)?;
+        h.insert(&value, |s, _| s.proceed(), |_| Ok(value))?;
     }
 
     for i in 0..A_LOT {
         let value = (i + 1) as u32;
         let mut found = false;
-        h.get(&value, |candidate| {
+        h.get(&value, |s, candidate| {
             if *candidate == (i + 1) as u32 {
                 found = true;
-                Search::Halt
+                s.halt()
             } else {
-                Search::Continue
+                s.proceed()
             }
         });
         assert_eq!(found, true);
@@ -50,12 +50,12 @@ fn a_lot() -> Result<(), io::Error> {
 
     let mut found = false;
     let nonexist = A_LOT as u32 + 1;
-    h.get(&nonexist, |candidate| {
+    h.get(&nonexist, |s, candidate| {
         if *candidate == nonexist {
             found = true;
-            Search::Halt
+            s.halt()
         } else {
-            Search::Continue
+            s.proceed()
         }
     });
 

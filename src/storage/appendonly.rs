@@ -55,7 +55,7 @@ impl AppendOnly {
             let res = DiskBytes::find_space_for(*writehead, len);
             *writehead = res + len as u64;
             res
-        })?;
+        });
 
         let slice = unsafe { self.bytes.request_write(write_offset, len)? };
         slice.copy_from_slice(bytes);

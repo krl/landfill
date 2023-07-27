@@ -67,11 +67,16 @@ where
     ///
     /// This method will panic if the updated value compares less as the old one,
     /// so make sure that it gets set equal to or greater than its old value.
-    pub fn update<F, R>(&self, f: F) -> io::Result<R>
+    pub fn update<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut T) -> R,
     {
         self.0.lock().update(f)
+    }
+
+    /// Flushes the journal to disk, blocks until complete
+    pub fn flush(&self) -> io::Result<()> {
+        self.0.lock().flush()
     }
 }
 
@@ -119,7 +124,7 @@ impl<T> JournalInner<T>
 where
     T: Pod + Clone + Hash + Ord,
 {
-    fn update<F, R>(&mut self, f: F) -> io::Result<R>
+    fn update<F, R>(&mut self, f: F) -> R
     where
         F: FnOnce(&mut T) -> R,
     {
@@ -137,8 +142,11 @@ where
         assert!(value >= old_value, "Journal updates must be incremental");
 
         entries[next_entry] = JournalEntry::new(value);
-        self.mapping.flush()?;
         self.latest_entry_index = next_entry;
-        Ok(res)
+        res
+    }
+
+    fn flush(&self) -> io::Result<()> {
+        self.mapping.flush()
     }
 }

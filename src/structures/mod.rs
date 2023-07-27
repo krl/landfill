@@ -1,2 +1,5 @@
 mod smash;
-pub use smash::{Search, SmashMap};
+pub use smash::SmashMap;
+
+// mod oncemap;
+// pub use oncemap::OnceMap;

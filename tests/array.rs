@@ -12,8 +12,11 @@ use with_temp_path::with_temp_path;
 fn array_trivial() -> Result<(), std::io::Error> {
     let lf = Landfill::ephemeral()?;
     let da = Array::try_from(&lf)?;
+
     da.with_mut(39, |m| *m = 32)?;
+
     assert_eq!(*da.get(39).unwrap(), 32);
+
     Ok(())
 }
 

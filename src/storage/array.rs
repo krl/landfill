@@ -7,6 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use parking_lot::{RwLock, RwLockReadGuard};
 
 use super::bytes::DiskBytes;
+use crate::helpers;
 use crate::Landfill;
 
 const N_LOCKS: usize = 256;
@@ -56,7 +57,7 @@ impl<T> TryFrom<&Landfill> for Array<T> {
 
 impl<T> Array<T>
 where
-    T: Zeroable + Pod + PartialEq,
+    T: Zeroable + Pod,
 {
     /// Flush the in-memory changes to disk
     ///
@@ -78,7 +79,7 @@ where
         if let Some(slice) = self.bytes.read(byte_offset, t_size as u32) {
             let cast: &[T] = bytemuck::cast_slice(slice);
             debug_assert_eq!(cast.len(), 1);
-            if cast[0] != T::zeroed() {
+            if !helpers::is_all_zeroes(cast) {
                 Some(ArrayGuard {
                     item: &cast[0],
                     _guard: guard,
@@ -111,8 +112,7 @@ where
 
         let res = closure(t);
 
-        // not neccesary to manually drop this,
-        // we're explicit just to be clear that it's over.
+        // just to be explicit, it's not neccesary to manually drop this
         drop(guard);
 
         Ok(res)

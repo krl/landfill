@@ -4,70 +4,19 @@ use std::marker::PhantomData;
 
 use bytemuck::{Pod, Zeroable};
 
-use crate::Entropy;
-
+use crate::helpers;
 use crate::Array;
+use crate::Entropy;
 use crate::Landfill;
 
-struct SearchPattern<'a> {
-    entropy: &'a Entropy,
-    key_hash: u64,
-    fanout: usize,
-    offset: usize,
-    retries: usize,
-    tries_limit: usize,
-}
-
-impl<'a> SearchPattern<'a> {
-    fn new<K: Hash>(entropy: &'a Entropy, key: &K) -> Self {
-        let key_hash = entropy.checksum(key);
-        SearchPattern {
-            entropy,
-            key_hash,
-            fanout: 1024,
-            offset: 0,
-            retries: 0,
-            tries_limit: 1,
-        }
-    }
-}
-
-impl<'a> Iterator for SearchPattern<'a> {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // We add together the following quantities to calculate the next
-        // bucket index to use
-        let slot =
-			// the global offset
-			self.offset +
-			// the entropy state, modulo the currently active fanout
-			(self.key_hash % self.fanout as u64) as usize +
-		// how many sequential retries have been made
-			self.retries;
-
-        // FIXME: Calculating the next value eagerly is wasteful
-
-        self.retries += 1;
-        if self.retries == self.tries_limit {
-            self.offset += self.fanout;
-            self.fanout = self.fanout << 1;
-            self.tries_limit = self.tries_limit << 1;
-            self.key_hash = self.entropy.checksum(&self.key_hash);
-            self.retries = 0;
-        }
-
-        Some(slot)
-    }
-}
+const INITIAL_FANOUT: usize = 1024;
 
 /// Low-level on-disk hashmap
 ///
 /// This is an implementaiton of hashmap with multi-values and false positives
-/// for more traditional key-value storage see `KVMap`
 ///
-/// This type should generally not be used directly, but rather to implement other
-/// map-like datastructues
+/// This type should generally not be used directly, but rather be used as a base
+/// to implement other map-like datastructues
 pub struct SmashMap<K, V> {
     slots: Array<V>,
     entropy: Entropy,
@@ -87,37 +36,92 @@ impl<K, V> TryFrom<&Landfill> for SmashMap<K, V> {
 }
 
 /// Enum for signaling if a search should end or continue
-pub enum Search {
-    /// Continue searching
-    Continue,
+pub enum SearchNext {
+    /// Proceed with searching
+    Proceed,
     /// Stop searching
     Halt,
+}
+
+pub struct SearchPattern<'a> {
+    entropy_source: &'a Entropy,
+    entropy_state: u64,
+    fanout: usize,
+    offset: usize,
+    retries: usize,
+    tries_limit: usize,
+}
+
+impl<'a> SearchPattern<'a> {
+    pub fn proceed(&self) -> SearchNext {
+        SearchNext::Proceed
+    }
+
+    pub fn halt(&self) -> SearchNext {
+        SearchNext::Halt
+    }
+
+    pub fn tag_u8(&self) -> u8 {
+        let slice = &[self.entropy_state];
+        let bytes: &[u8] = bytemuck::cast_slice(slice);
+        bytes[0]
+    }
+
+    pub fn tag_u16(&self) -> u16 {
+        let slice = &[self.entropy_state];
+        let bytes: &[u16] = bytemuck::cast_slice(slice);
+        bytes[0]
+    }
+
+    pub fn tag_u32(&self) -> u32 {
+        let slice = &[self.entropy_state];
+        let bytes: &[u32] = bytemuck::cast_slice(slice);
+        bytes[0]
+    }
+
+    pub fn tag_u64(&self) -> u64 {
+        self.entropy_state
+    }
+
+    fn new<K: Hash>(key: &K, entropy_source: &'a Entropy) -> Self {
+        let entropy_state = entropy_source.checksum(key);
+        SearchPattern {
+            entropy_source,
+            entropy_state,
+            fanout: INITIAL_FANOUT,
+            offset: 0,
+            retries: 0,
+            tries_limit: 1,
+        }
+    }
+
+    fn get_slot(&self) -> usize {
+        // the global offset
+        self.offset
+		// the entropy state, modulo the currently active fanout
+            + (self.entropy_state % self.fanout as u64) as usize
+		// how many sequential retries have been made
+            + self.retries
+    }
+
+    fn calculate_next(&mut self) {
+        self.retries += 1;
+        if self.retries == self.tries_limit {
+            self.offset += self.fanout;
+            self.fanout = self.fanout << 1;
+            self.tries_limit = self.tries_limit << 1;
+            self.entropy_state =
+                self.entropy_source.checksum(&self.entropy_state);
+            self.retries = 0;
+        }
+    }
 }
 
 impl<K, V> SmashMap<K, V>
 where
     K: Hash,
-    V: PartialEq + Zeroable + Pod,
+    V: Zeroable + Pod,
 {
-    /// Search the map and call the provided closure with the results
-    pub fn get<Occupied>(&self, key: &K, mut on_occupied: Occupied)
-    where
-        K: Hash,
-        Occupied: FnMut(&V) -> Search,
-    {
-        let search = SearchPattern::new(&self.entropy, key);
-
-        for idx in search {
-            if let Some(gotten) = self.slots.get(idx) {
-                if let Search::Halt = on_occupied(&*gotten) {
-                    return;
-                }
-            } else {
-                return;
-            }
-        }
-    }
-
     /// Searches the map for entries and presents them to the consumer,
     /// that may chose to break the process here (for example,
     /// if the key was already present in a cache)
@@ -128,45 +132,73 @@ where
         &self,
         key: &K,
         on_occupied: Occupied,
-        on_empty: Empty,
+        mut on_empty: Empty,
     ) -> io::Result<()>
     where
-        K: Hash,
-        Occupied: Fn(&V) -> Search,
-        Empty: Fn() -> V,
+        Occupied: Fn(&SearchPattern, &V) -> SearchNext,
+        Empty: FnMut(&SearchPattern) -> io::Result<V>,
     {
-        let search = SearchPattern::new(&self.entropy, key);
+        let mut search = SearchPattern::new(key, &self.entropy);
+        loop {
+            let slot = search.get_slot();
 
-        for idx in search {
-            match self.slots.get(idx) {
+            match self.slots.get(slot) {
                 Some(value) => {
-                    if let Search::Halt = on_occupied(&*value) {
+                    if let SearchNext::Halt = on_occupied(&search, &*value) {
                         // consumer signaled that the search is over
                         return Ok(());
                     }
                 }
                 None => {
+                    // Encountered an empty slot
                     let mut finished = false;
-                    self.slots.with_mut(idx, |mut_slot| {
-                        if *mut_slot != V::zeroed() {
+
+                    self.slots.with_mut(slot, |mut_slot| {
+                        if !helpers::is_all_zeroes(&[*mut_slot]) {
                             // another thread already wrote here before our
                             // write lock cleared
-                            if let Search::Halt = on_occupied(mut_slot) {
+                            if let SearchNext::Halt =
+                                on_occupied(&search, mut_slot)
+                            {
                                 // and consumer was happy with this value
                                 finished = true;
                             }
-                        // continue loop
                         } else {
-                            *mut_slot = on_empty();
+                            *mut_slot = on_empty(&search)?;
                             finished = true;
                         }
-                    })?;
+                        Ok::<_, io::Error>(())
+                    })??;
                     if finished {
                         return Ok(());
                     }
                 }
             }
+            search.calculate_next()
         }
-        unreachable!()
+    }
+
+    /// Search the map and call the provided closure with the results
+    pub fn get<Occupied>(&self, key: &K, mut on_occupied: Occupied)
+    where
+        K: Hash,
+        Occupied: FnMut(&SearchPattern, &V) -> SearchNext,
+    {
+        let mut search = SearchPattern::new(key, &self.entropy);
+        loop {
+            let slot = search.get_slot();
+
+            match self.slots.get(slot) {
+                Some(value) => {
+                    if let SearchNext::Halt = on_occupied(&search, &*value) {
+                        return;
+                    }
+                }
+                None => {
+                    return;
+                }
+            }
+            search.calculate_next()
+        }
     }
 }
