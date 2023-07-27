@@ -1,30 +1,17 @@
-use std::io;
+use std::{io, mem};
 
-use bytemuck_derive::*;
+use bytemuck::Pod;
 
 use super::bytes::DiskBytes;
-use crate::Journal;
-use crate::Landfill;
+use crate::{Journal, Landfill};
 
 /// AppendOnly
-///
-/// An unbounded slice of bytes, that can only grow.
-///
 /// Since the collection can only grow, and written bytes never move in memory,
 /// it is possible to keep shared references into the stored bytes, while still
 /// concurrently appending new data.
 pub struct AppendOnly {
     bytes: DiskBytes,
     journal: Journal<u64>,
-}
-
-/// A record of data put into the `AppendOnly` store
-#[derive(Clone, Copy, Zeroable, Pod)]
-#[repr(C)]
-pub struct Record {
-    offset: u64,
-    length: u32,
-    _pad: u32,
 }
 
 impl TryFrom<&Landfill> for AppendOnly {
@@ -46,33 +33,59 @@ impl AppendOnly {
         self.bytes.flush()
     }
 
-    /// Write bytes to the store.
-    /// Returns a `Record` of the written data
-    pub fn write(&self, bytes: &[u8]) -> io::Result<Record> {
-        let len = bytes.len();
+    /// Put a value into the Appendonly store, returning its ofset
+    pub fn insert<T: Pod>(&self, t: T) -> io::Result<u64> {
+        self.write(&[t])
+    }
+
+    /// Write a slice of values into the store returning their offset
+    pub fn write<T: Pod>(&self, items: &[T]) -> io::Result<u64> {
+        let len = items.len();
+        let byte_size = len * mem::size_of::<T>();
 
         let write_offset = self.journal.update(|writehead| {
-            let res = DiskBytes::find_space_for(*writehead, len);
-            *writehead = res + len as u64;
+            let res = DiskBytes::find_space_for(
+                *writehead,
+                len,
+                mem::align_of::<T>(),
+            );
+            *writehead = res + byte_size as u64;
             res
         });
 
-        let slice = unsafe { self.bytes.request_write(write_offset, len)? };
-        slice.copy_from_slice(bytes);
+        let slice =
+            unsafe { self.bytes.request_write(write_offset, byte_size)? };
 
-        let record = Record {
-            offset: write_offset,
-            length: len as u32,
-            _pad: 0xffffffff,
-        };
+        let insert_bytes: &[u8] = bytemuck::cast_slice(items);
 
-        Ok(record)
+        slice.copy_from_slice(insert_bytes);
+
+        Ok(write_offset)
     }
 
-    /// Get a reference to the data associated with the provided `Record`
-    pub fn get(&self, record: Record) -> &[u8] {
-        self.bytes
-            .read(record.offset, record.length)
-            .expect("Fatal Error: invalid record!")
+    /// Get a reference to the data at offset and length
+    pub fn get<T>(&self, offset: u64) -> &T
+    where
+        T: Pod,
+    {
+        let bytes = self
+            .bytes
+            .read(offset, mem::size_of::<T>() as u32)
+            .expect("Fatal Error: invalid offset or length!");
+
+        &bytemuck::cast_slice(bytes)[0]
+    }
+
+    /// Get a reference to the data at offset and length
+    pub fn get_slice<T>(&self, offset: u64, len: usize) -> &[T]
+    where
+        T: Pod,
+    {
+        let bytes = self
+            .bytes
+            .read(offset, (len * mem::size_of::<T>()) as u32)
+            .expect("Fatal Error: invalid offset or length!");
+
+        bytemuck::cast_slice(bytes)
     }
 }

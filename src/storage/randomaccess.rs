@@ -18,25 +18,25 @@ const N_LOCKS: usize = 256;
 /// the value of `Self::zeroed()`, i.e a representation consisting of all zeroes,
 /// will be considered `None` for purpouses of accessing uninitialized elements of
 /// the array
-pub struct Array<T> {
+pub struct RandomAccess<T> {
     bytes: DiskBytes,
     locks: [RwLock<()>; N_LOCKS],
     _marker: PhantomData<T>,
 }
 
-pub struct ArrayGuard<'a, T> {
+pub struct RandomAccessGuard<'a, T> {
     item: &'a T,
     _guard: RwLockReadGuard<'a, ()>,
 }
 
-impl<'a, T> Deref for ArrayGuard<'a, T> {
+impl<'a, T> Deref for RandomAccessGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
         self.item
     }
 }
 
-impl<T> TryFrom<&Landfill> for Array<T> {
+impl<T> TryFrom<&Landfill> for RandomAccess<T> {
     type Error = io::Error;
 
     /// Opens a new array at specified path, creating a directory if neccesary
@@ -47,7 +47,7 @@ impl<T> TryFrom<&Landfill> for Array<T> {
         const MUTEX: RwLock<()> = RwLock::new(());
         let locks = [MUTEX; N_LOCKS];
 
-        Ok(Array {
+        Ok(RandomAccess {
             bytes,
             locks,
             _marker: PhantomData,
@@ -55,7 +55,7 @@ impl<T> TryFrom<&Landfill> for Array<T> {
     }
 }
 
-impl<T> Array<T>
+impl<T> RandomAccess<T>
 where
     T: Zeroable + Pod,
 {
@@ -70,7 +70,7 @@ where
     ///
     /// Returns None if the element is uninitialized
     /// or equal to `Zeroable::zeroed()`.
-    pub fn get(&self, index: usize) -> Option<ArrayGuard<T>> {
+    pub fn get(&self, index: usize) -> Option<RandomAccessGuard<T>> {
         let t_size = mem::size_of::<T>();
         let byte_offset = (index * t_size) as u64;
 
@@ -80,7 +80,7 @@ where
             let cast: &[T] = bytemuck::cast_slice(slice);
             debug_assert_eq!(cast.len(), 1);
             if !helpers::is_all_zeroes(cast) {
-                Some(ArrayGuard {
+                Some(RandomAccessGuard {
                     item: &cast[0],
                     _guard: guard,
                 })

@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use bytemuck::Zeroable;
 use bytemuck_derive::*;
-use landfill::{Array, Landfill};
+use landfill::{Landfill, RandomAccess};
 use rand::{seq::SliceRandom, Rng};
 
 mod with_temp_path;
 use with_temp_path::with_temp_path;
 
 #[test]
-fn array_trivial() -> Result<(), std::io::Error> {
+fn random_access_trivial() -> Result<(), std::io::Error> {
     let lf = Landfill::ephemeral()?;
-    let da = Array::try_from(&lf)?;
+    let da = RandomAccess::try_from(&lf)?;
 
     da.with_mut(39, |m| *m = 32)?;
 
@@ -21,7 +21,7 @@ fn array_trivial() -> Result<(), std::io::Error> {
 }
 
 #[test]
-fn array_stress() -> Result<(), std::io::Error> {
+fn random_access_stress() -> Result<(), std::io::Error> {
     const N_THREADS: usize = 16;
     const WRITES_PER_THREAD: usize = 512;
 
@@ -71,7 +71,7 @@ fn array_stress() -> Result<(), std::io::Error> {
     let mut reader_threads = vec![];
 
     let lf = Landfill::ephemeral()?;
-    let da = Arc::new(Array::try_from(&lf)?);
+    let da = Arc::new(RandomAccess::try_from(&lf)?);
 
     for mut writer_data in writer_datasets.drain(..) {
         let da_write = da.clone();
@@ -132,12 +132,12 @@ fn array_stress() -> Result<(), std::io::Error> {
 }
 
 #[test]
-fn array_persist_restore() -> Result<(), std::io::Error> {
+fn random_access_persist_restore() -> Result<(), std::io::Error> {
     with_temp_path(|path| {
         {
             let lf = Landfill::open(path)?;
 
-            let ao = Array::<u32>::try_from(&lf)?;
+            let ao = RandomAccess::<u32>::try_from(&lf)?;
 
             for i in 1..=1024 {
                 ao.with_mut(i, |slot| *slot = i as u32)?;
@@ -147,7 +147,7 @@ fn array_persist_restore() -> Result<(), std::io::Error> {
         // re-open
 
         let lf = Landfill::open(path)?;
-        let ao = Array::<u32>::try_from(&lf)?;
+        let ao = RandomAccess::<u32>::try_from(&lf)?;
 
         for i in 1..=1024 {
             assert_eq!(*ao.get(i).unwrap(), i as u32)

@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
-use std::io::{self};
 use std::marker::PhantomData;
+use std::{io, mem};
 
 use bytemuck::{Pod, Zeroable};
 use bytemuck_derive::*;
@@ -135,7 +135,9 @@ where
         let mut value = entry.value;
         let old_value = entry.value;
 
-        let next_entry = (self.latest_entry_index + 1) % JOURNAL_SIZE;
+        let max_entry =
+            JOURNAL_SIZE / (mem::size_of::<T>() + mem::size_of::<u64>());
+        let next_entry = (self.latest_entry_index + 1) % max_entry;
 
         let res = f(&mut value);
 

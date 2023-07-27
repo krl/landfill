@@ -53,14 +53,21 @@ impl DiskBytes {
         Ok(())
     }
 
-    pub fn find_space_for(offset: u64, len: usize) -> u64 {
+    pub fn find_space_for(offset: u64, len: usize, alignment: usize) -> u64 {
         let (lane_nr, inner_offset) = Self::lane_nr_and_ofs(offset);
         let lane_size = Self::lane_size(lane_nr);
-        if inner_offset + len as u64 <= lane_size {
-            offset
+
+        let padding = alignment as u64 - (offset % alignment as u64);
+
+        if inner_offset + padding + len as u64 <= lane_size {
+            offset + padding
         } else {
             // tail-recurse
-            Self::find_space_for(offset + (lane_size - inner_offset), len)
+            Self::find_space_for(
+                offset + (lane_size - inner_offset),
+                len,
+                alignment,
+            )
         }
     }
 
@@ -205,7 +212,7 @@ mod test {
 
             let len = bytes.len();
 
-            let space_for = DiskBytes::find_space_for(ofs, len);
+            let space_for = DiskBytes::find_space_for(ofs, len, 1);
 
             // this would error out if the space was not valid
             unsafe { db.request_write(space_for, len)? };

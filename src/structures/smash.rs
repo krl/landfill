@@ -5,9 +5,9 @@ use std::marker::PhantomData;
 use bytemuck::{Pod, Zeroable};
 
 use crate::helpers;
-use crate::Array;
 use crate::Entropy;
 use crate::Landfill;
+use crate::RandomAccess;
 
 const INITIAL_FANOUT: usize = 1024;
 
@@ -18,7 +18,7 @@ const INITIAL_FANOUT: usize = 1024;
 /// This type should generally not be used directly, but rather be used as a base
 /// to implement other map-like datastructues
 pub struct SmashMap<K, V> {
-    slots: Array<V>,
+    slots: RandomAccess<V>,
     entropy: Entropy,
     _marker: PhantomData<K>,
 }
@@ -28,7 +28,7 @@ impl<K, V> TryFrom<&Landfill> for SmashMap<K, V> {
 
     fn try_from(landfill: &Landfill) -> Result<Self, Self::Error> {
         Ok(SmashMap {
-            slots: Array::<V>::try_from(landfill)?,
+            slots: RandomAccess::<V>::try_from(landfill)?,
             entropy: Entropy::try_from(landfill)?,
             _marker: PhantomData,
         })

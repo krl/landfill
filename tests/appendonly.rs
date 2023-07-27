@@ -11,13 +11,13 @@ fn appendonly_trivial() -> Result<(), std::io::Error> {
     let msg_a = b"hello word";
     let msg_b = b"hello world!";
 
-    let rec_a = ao.write(msg_a)?;
+    let ofs_a = ao.write(msg_a)?;
 
-    let slice_a = ao.get(rec_a);
+    let slice_a = ao.get_slice::<u8>(ofs_a, msg_a.len());
 
-    let rec_b = ao.write(msg_b)?;
+    let ofs_b = ao.write(msg_b)?;
 
-    let slice_b = ao.get(rec_b);
+    let slice_b = ao.get_slice::<u8>(ofs_b, msg_b.len());
 
     assert_eq!(slice_a, msg_a);
     assert_eq!(slice_b, msg_b);
@@ -28,8 +28,8 @@ fn appendonly_trivial() -> Result<(), std::io::Error> {
 #[test]
 fn appendonly_save_restore() -> Result<(), std::io::Error> {
     with_temp_path(|path| {
-        let rec_a;
-        let rec_b;
+        let ofs_a;
+        let ofs_b;
 
         let msg_a = b"hello word";
         let msg_b = b"hello world!";
@@ -38,13 +38,13 @@ fn appendonly_save_restore() -> Result<(), std::io::Error> {
             let lf = Landfill::open(path)?;
             let ao = AppendOnly::try_from(&lf)?;
 
-            rec_a = ao.write(msg_a)?;
+            ofs_a = ao.write(msg_a)?;
 
-            let slice_a = ao.get(rec_a);
+            let slice_a = ao.get_slice::<u8>(ofs_a, msg_a.len());
 
-            rec_b = ao.write(msg_b)?;
+            ofs_b = ao.write(msg_b)?;
 
-            let slice_b = ao.get(rec_b);
+            let slice_b = ao.get_slice::<u8>(ofs_b, msg_b.len());
 
             assert_eq!(slice_a, msg_a);
             assert_eq!(slice_b, msg_b);
@@ -55,8 +55,45 @@ fn appendonly_save_restore() -> Result<(), std::io::Error> {
         // re-open
 
         let ao = AppendOnly::try_from(&lf)?;
-        assert_eq!(ao.get(rec_a), msg_a);
-        assert_eq!(ao.get(rec_b), msg_b);
+        assert_eq!(ao.get_slice::<u8>(ofs_a, msg_a.len()), msg_a);
+        assert_eq!(ao.get_slice::<u8>(ofs_b, msg_b.len()), msg_b);
+
+        Ok(())
+    })
+}
+
+#[test]
+fn appendonly_larger_type() -> Result<(), std::io::Error> {
+    with_temp_path(|path| {
+        let ofs_a;
+        let ofs_b;
+
+        let msg_a = &[7u32, 1, 0, 0, 1999, 8];
+        let msg_b = &[3u32, 4];
+
+        {
+            let lf = Landfill::open(path)?;
+            let ao = AppendOnly::try_from(&lf)?;
+
+            ofs_a = ao.write(msg_a)?;
+
+            let slice_a = ao.get_slice::<u32>(ofs_a, msg_a.len());
+
+            ofs_b = ao.write(msg_b)?;
+
+            let slice_b = ao.get_slice::<u32>(ofs_b, msg_b.len());
+
+            assert_eq!(slice_a, msg_a);
+            assert_eq!(slice_b, msg_b);
+        }
+
+        let lf = Landfill::open(path)?;
+
+        // re-open
+
+        let ao = AppendOnly::try_from(&lf)?;
+        assert_eq!(ao.get_slice::<u32>(ofs_a, msg_a.len()), msg_a);
+        assert_eq!(ao.get_slice::<u32>(ofs_b, msg_b.len()), msg_b);
 
         Ok(())
     })
@@ -65,8 +102,8 @@ fn appendonly_save_restore() -> Result<(), std::io::Error> {
 #[test]
 fn appendonly_save_restore_skip_files() -> Result<(), std::io::Error> {
     with_temp_path(|path| {
-        let rec_a;
-        let rec_b;
+        let ofs_a;
+        let ofs_b;
 
         let msg_a = b"hello word";
         let msg_b = b"hello world!";
@@ -75,13 +112,13 @@ fn appendonly_save_restore_skip_files() -> Result<(), std::io::Error> {
             let lf = Landfill::open(path)?;
             let ao = AppendOnly::try_from(&lf)?;
 
-            rec_a = ao.write(msg_a)?;
+            ofs_a = ao.write(msg_a)?;
 
-            let slice_a = ao.get(rec_a);
+            let slice_a = ao.get_slice::<u8>(ofs_a, msg_a.len());
 
-            rec_b = ao.write(msg_b)?;
+            ofs_b = ao.write(msg_b)?;
 
-            let slice_b = ao.get(rec_b);
+            let slice_b = ao.get_slice::<u8>(ofs_b, msg_b.len());
 
             assert_eq!(slice_a, msg_a);
             assert_eq!(slice_b, msg_b);
@@ -92,8 +129,8 @@ fn appendonly_save_restore_skip_files() -> Result<(), std::io::Error> {
         let lf = Landfill::open(path)?;
         let ao = AppendOnly::try_from(&lf)?;
 
-        assert_eq!(ao.get(rec_a), msg_a);
-        assert_eq!(ao.get(rec_b), msg_b);
+        assert_eq!(ao.get_slice::<u8>(ofs_a, msg_a.len()), msg_a);
+        assert_eq!(ao.get_slice::<u8>(ofs_b, msg_b.len()), msg_b);
 
         Ok(())
     })
