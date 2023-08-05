@@ -25,6 +25,8 @@ struct LandfillInner {
     dir_path: PathBuf,
     already_mapped: Mutex<HashSet<PathBuf>>,
     self_destruct_sequence_initiated: Mutex<bool>,
+    // lockfile to prevent multiple landfills using the same path at the same time
+    lock_file_path: Option<PathBuf>,
     // to manage the lifetime of temporary directories
     _temp_dir: Option<TempDir>,
 }
@@ -57,12 +59,22 @@ impl Landfill {
             fs::create_dir(&dir_path)?;
         }
 
+        let mut lock_file_path = dir_path.clone();
+        lock_file_path.push("_lock");
+
+        // aquire filesystem lock
+        let _lock = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&lock_file_path)?;
+
         Ok(Landfill {
             inner: Arc::new(LandfillInner {
                 _temp_dir: None,
                 dir_path,
                 self_destruct_sequence_initiated: Mutex::new(false),
                 already_mapped: Mutex::new(HashSet::new()),
+                lock_file_path: Some(lock_file_path),
             }),
             name_prefix: String::new(),
         })
@@ -71,7 +83,7 @@ impl Landfill {
     /// Create a landfill backed by temporaray directories
     pub fn ephemeral() -> io::Result<Landfill> {
         let dir = tempfile::tempdir()?;
-        let dir_path = dir.path().into();
+        let dir_path: PathBuf = dir.path().into();
 
         Ok(Landfill {
             inner: Arc::new(LandfillInner {
@@ -79,6 +91,7 @@ impl Landfill {
                 dir_path,
                 self_destruct_sequence_initiated: Mutex::new(false),
                 already_mapped: Mutex::new(HashSet::new()),
+                lock_file_path: None,
             }),
             name_prefix: String::new(),
         })
@@ -136,7 +149,11 @@ impl Landfill {
         // Register that we have this file mapped
         already_mapped.insert(full_path);
 
-        Ok(Some(MappedFile { _file: file, map }))
+        Ok(Some(MappedFile {
+            _file: file,
+            map,
+            _fill: self.clone(),
+        }))
     }
 
     /// Reads a static file into type `T` if it exists
@@ -210,13 +227,17 @@ impl Drop for LandfillInner {
         if *self.self_destruct_sequence_initiated.lock() {
             todo!()
         }
+        if let Some(lock_path) = self.lock_file_path.take() {
+            let _ = fs::remove_file(lock_path);
+        }
     }
 }
 
 /// A file with a corresponding memory map of the entire contents of the file
 pub struct MappedFile {
-    _file: File,
     map: UnsafeCell<MmapMut>,
+    _file: File,
+    _fill: Landfill,
 }
 
 impl AsRef<[u8]> for MappedFile {
