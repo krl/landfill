@@ -109,6 +109,14 @@ impl Landfill {
         }
     }
 
+    /// Mark this landfill for destruction
+    ///
+    /// Data will be deleted as soon as the last reference to this landfill
+    /// goes out of scope
+    pub fn initiate_self_destruct_sequence(&self) {
+        *self.inner.self_destruct_sequence_initiated.lock() = true;
+    }
+
     fn full_path_for(&self, name: &str) -> PathBuf {
         let mut full_path = PathBuf::from(&self.inner.dir_path);
         full_path.push(&join_names(&self.name_prefix, name));
@@ -224,11 +232,11 @@ impl Landfill {
 
 impl Drop for LandfillInner {
     fn drop(&mut self) {
-        if *self.self_destruct_sequence_initiated.lock() {
-            todo!()
-        }
         if let Some(lock_path) = self.lock_file_path.take() {
             let _ = fs::remove_file(lock_path);
+        }
+        if *self.self_destruct_sequence_initiated.lock() {
+            let _ = fs::remove_dir_all(&self.dir_path);
         }
     }
 }
