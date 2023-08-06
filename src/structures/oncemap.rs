@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use bytemuck::{Pod, Zeroable};
 use bytemuck_derive::*;
 
-use crate::{AppendOnly, Landfill, SmashMap};
+use crate::{AppendOnly, GuardedLandfill, SmashMap, Substructure};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -26,14 +26,10 @@ pub struct OnceMap<K, V> {
     _marker: PhantomData<V>,
 }
 
-impl<K, V> TryFrom<&Landfill> for OnceMap<K, V> {
-    type Error = io::Error;
-
-    fn try_from(landfill: &Landfill) -> Result<Self, Self::Error> {
-        let landfill = landfill.branch("oncemap");
-
-        let data = AppendOnly::try_from(&landfill)?;
-        let index = SmashMap::try_from(&landfill)?;
+impl<K, V> Substructure for OnceMap<K, V> {
+    fn init(lf: GuardedLandfill) -> io::Result<Self> {
+        let data = lf.substructure("data")?;
+        let index = lf.substructure("index")?;
 
         Ok(OnceMap {
             data,

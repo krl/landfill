@@ -8,7 +8,7 @@ use parking_lot::{RwLock, RwLockReadGuard};
 
 use super::bytes::DiskBytes;
 use crate::helpers;
-use crate::Landfill;
+use crate::{GuardedLandfill, Substructure};
 
 const N_LOCKS: usize = 256;
 
@@ -36,13 +36,10 @@ impl<'a, T> Deref for RandomAccessGuard<'a, T> {
     }
 }
 
-impl<T> TryFrom<&Landfill> for RandomAccess<T> {
-    type Error = io::Error;
-
+impl<T> Substructure for RandomAccess<T> {
     /// Opens a new array at specified path, creating a directory if neccesary
-    fn try_from(landfill: &Landfill) -> io::Result<Self> {
-        let landfill = landfill.branch("array");
-        let bytes = DiskBytes::try_from(&landfill)?;
+    fn init(lf: GuardedLandfill) -> io::Result<Self> {
+        let bytes = lf.substructure("array")?;
 
         const MUTEX: RwLock<()> = RwLock::new(());
         let locks = [MUTEX; N_LOCKS];

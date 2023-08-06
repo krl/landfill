@@ -7,7 +7,7 @@ use bytemuck_derive::*;
 use parking_lot::Mutex;
 use seahash::SeaHasher;
 
-use crate::{Landfill, MappedFile};
+use crate::{GuardedLandfill, MappedFile, Substructure};
 
 // journal is one page maximum
 const JOURNAL_SIZE: usize = 4096;
@@ -80,15 +80,13 @@ where
     }
 }
 
-impl<T> TryFrom<&Landfill> for Journal<T>
+impl<T> Substructure for Journal<T>
 where
     T: Zeroable + Pod + Default + Hash + Ord,
 {
-    type Error = io::Error;
-
-    fn try_from(landfill: &Landfill) -> io::Result<Self> {
+    fn init(lf: GuardedLandfill) -> io::Result<Self> {
         if let Some(mapping) =
-            landfill.map_file_create("journal", JOURNAL_SIZE as u64)?
+            lf.map_file_create("".into(), JOURNAL_SIZE as u64)?
         {
             let journal_entry_slice = unsafe { mapping.bytes_mut() };
             let journal_entries: &mut [JournalEntry<T>] =

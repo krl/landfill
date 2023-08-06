@@ -2,7 +2,7 @@ use std::io;
 use std::mem;
 use std::sync::OnceLock;
 
-use crate::{Landfill, MappedFile};
+use crate::{GuardedLandfill, Landfill, MappedFile, Substructure};
 
 const N_LANES: usize = 32;
 const FIRST_FILE_SIZE: u64 = 4096;
@@ -12,16 +12,14 @@ pub(crate) struct DiskBytes {
     lanes: [OnceLock<MappedFile>; N_LANES],
 }
 
-impl TryFrom<&Landfill> for DiskBytes {
-    type Error = io::Error;
-
-    fn try_from(landfill: &Landfill) -> Result<Self, Self::Error> {
+impl Substructure for DiskBytes {
+    fn init(lf: GuardedLandfill) -> Result<Self, io::Error> {
         const LOCK: OnceLock<MappedFile> = OnceLock::new();
         let lanes = [LOCK; N_LANES];
 
         for (i, lane) in lanes.iter().enumerate() {
             if let Some(lane_file) =
-                landfill.map_file(&format!("{:02x}", i), Self::lane_size(i))?
+                lf.map_file_existing(format!("{:02x}", i), Self::lane_size(i))?
             {
                 // `OnceLock::set` returns the value you tried to set, had it
                 // already been initialized
@@ -36,7 +34,7 @@ impl TryFrom<&Landfill> for DiskBytes {
         }
 
         Ok(DiskBytes {
-            landfill: landfill.clone(),
+            landfill: lf.inner(),
             lanes,
         })
     }
@@ -92,7 +90,7 @@ impl DiskBytes {
                 let name = format!("{:02x}", lane_nr);
 
                 if let Some(lane_file) =
-                    self.landfill.map_file_create(&name, lane_size)?
+                    self.landfill.map_file_create(name, lane_size)?
                 {
                     // Since we got the file from the landfill, we can be sure
                     // that no other thread has been able to progress here
@@ -168,6 +166,7 @@ unsafe impl Sync for DiskBytes {}
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::Landfill;
 
     #[test]
     fn test_lane_math() {
@@ -181,8 +180,8 @@ mod test {
 
     #[test]
     fn simple_write_read() -> io::Result<()> {
-        let landfill = Landfill::ephemeral()?;
-        let db = DiskBytes::try_from(&landfill)?;
+        let lf = Landfill::ephemeral()?;
+        let db: DiskBytes = lf.substructure("diskbytes")?;
 
         let msg = b"hello world";
         let len = msg.len();
@@ -198,8 +197,8 @@ mod test {
 
     #[test]
     fn find_space() -> io::Result<()> {
-        let landfill = Landfill::ephemeral()?;
-        let db = DiskBytes::try_from(&landfill)?;
+        let lf = Landfill::ephemeral()?;
+        let db: DiskBytes = lf.substructure("diskbytes")?;
 
         let mut ofs = 0u64;
 

@@ -5,9 +5,7 @@ use std::marker::PhantomData;
 use bytemuck::{Pod, Zeroable};
 
 use crate::helpers;
-use crate::Entropy;
-use crate::Landfill;
-use crate::RandomAccess;
+use crate::{Entropy, GuardedLandfill, RandomAccess, Substructure};
 
 const INITIAL_FANOUT: usize = 1024;
 
@@ -23,13 +21,11 @@ pub struct SmashMap<K, V> {
     _marker: PhantomData<K>,
 }
 
-impl<K, V> TryFrom<&Landfill> for SmashMap<K, V> {
-    type Error = io::Error;
-
-    fn try_from(landfill: &Landfill) -> Result<Self, Self::Error> {
+impl<K, V> Substructure for SmashMap<K, V> {
+    fn init(lf: GuardedLandfill) -> io::Result<Self> {
         Ok(SmashMap {
-            slots: RandomAccess::<V>::try_from(landfill)?,
-            entropy: Entropy::try_from(landfill)?,
+            slots: lf.substructure("slots")?,
+            entropy: lf.substructure("entropy")?,
             _marker: PhantomData,
         })
     }

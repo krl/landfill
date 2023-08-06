@@ -11,7 +11,7 @@ use with_temp_path::with_temp_path;
 #[test]
 fn random_access_trivial() -> Result<(), std::io::Error> {
     let lf = Landfill::ephemeral()?;
-    let da = RandomAccess::try_from(&lf)?;
+    let da: RandomAccess<_> = lf.substructure("da")?;
 
     da.with_mut(39, |m| *m = 32)?;
 
@@ -71,7 +71,7 @@ fn random_access_stress() -> Result<(), std::io::Error> {
     let mut reader_threads = vec![];
 
     let lf = Landfill::ephemeral()?;
-    let da = Arc::new(RandomAccess::try_from(&lf)?);
+    let da: Arc<RandomAccess<_>> = Arc::new(lf.substructure("da")?);
 
     for mut writer_data in writer_datasets.drain(..) {
         let da_write = da.clone();
@@ -136,21 +136,20 @@ fn random_access_persist_restore() -> Result<(), std::io::Error> {
     with_temp_path(|path| {
         {
             let lf = Landfill::open(path)?;
-
-            let ao = RandomAccess::<u32>::try_from(&lf)?;
+            let ra: RandomAccess<u32> = lf.substructure("ra")?;
 
             for i in 1..=1024 {
-                ao.with_mut(i, |slot| *slot = i as u32)?;
+                ra.with_mut(i, |slot| *slot = i as u32)?;
             }
         }
 
         // re-open
 
         let lf = Landfill::open(path)?;
-        let ao = RandomAccess::<u32>::try_from(&lf)?;
+        let ra: RandomAccess<u32> = lf.substructure("ra")?;
 
         for i in 1..=1024 {
-            assert_eq!(*ao.get(i).unwrap(), i as u32)
+            assert_eq!(*ra.get(i).unwrap(), i as u32)
         }
 
         Ok(())

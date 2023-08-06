@@ -3,7 +3,7 @@ use std::{io, mem};
 use bytemuck::Pod;
 
 use super::bytes::DiskBytes;
-use crate::{Journal, Landfill};
+use crate::{GuardedLandfill, Journal, Substructure};
 
 /// AppendOnly
 /// Since the collection can only grow, and written bytes never move in memory,
@@ -14,12 +14,10 @@ pub struct AppendOnly {
     journal: Journal<u64>,
 }
 
-impl TryFrom<&Landfill> for AppendOnly {
-    type Error = io::Error;
-    fn try_from(landfill: &Landfill) -> io::Result<AppendOnly> {
-        let landfill = landfill.branch("ao");
-        let bytes = DiskBytes::try_from(&landfill)?;
-        let journal = Journal::try_from(&landfill)?;
+impl Substructure for AppendOnly {
+    fn init(lf: GuardedLandfill) -> io::Result<AppendOnly> {
+        let bytes = lf.substructure("bytes")?;
+        let journal = lf.substructure("journal")?;
 
         Ok(AppendOnly { bytes, journal })
     }

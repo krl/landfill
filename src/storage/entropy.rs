@@ -3,7 +3,7 @@ use std::{
     io,
 };
 
-use crate::Landfill;
+use crate::{GuardedLandfill, Substructure};
 
 use bytemuck_derive::*;
 use rand::Rng;
@@ -16,7 +16,7 @@ use seahash::SeaHasher;
 ///
 /// Useful for DOS-resistant hashmaps etc
 #[repr(C)]
-#[derive(Clone, Copy, Zeroable, Pod)]
+#[derive(Clone, Copy, Zeroable, Pod, Debug)]
 pub struct Entropy([u64; 4]);
 
 /// A Tag that can be used to loosely identify this specific instantiation of
@@ -25,11 +25,9 @@ pub struct Entropy([u64; 4]);
 #[derive(Clone, Copy, PartialEq, Eq, Zeroable, Pod)]
 pub struct Tag(u32);
 
-impl TryFrom<&Landfill> for Entropy {
-    type Error = io::Error;
-
-    fn try_from(landfill: &Landfill) -> io::Result<Self> {
-        landfill.get_static_or_init("entropy", || {
+impl Substructure for Entropy {
+    fn init(lf: GuardedLandfill) -> io::Result<Self> {
+        lf.get_static_or_init(|| {
             let mut rng = rand::thread_rng();
             Entropy(rng.gen())
         })

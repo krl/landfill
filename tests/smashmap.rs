@@ -5,8 +5,7 @@ use landfill::{Landfill, SmashMap};
 #[test]
 fn trivial() -> Result<(), io::Error> {
     let lf = Landfill::ephemeral()?;
-
-    let h = SmashMap::try_from(&lf)?;
+    let h: SmashMap<[u8; 3], u32> = lf.substructure("map")?;
 
     let msg: u32 = 1234;
 
@@ -27,7 +26,7 @@ const A_LOT: usize = 1024 * 128;
 #[test]
 fn a_lot() -> Result<(), io::Error> {
     let lf = Landfill::ephemeral()?;
-    let h = SmashMap::try_from(&lf)?;
+    let h: SmashMap<u32, u32> = lf.substructure("h")?;
 
     for i in 0..A_LOT {
         let value = (i + 1) as u32;

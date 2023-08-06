@@ -10,7 +10,7 @@ fn self_destruct() -> Result<(), std::io::Error> {
             {
                 let lf = Landfill::open(path)?;
 
-                let ao = RandomAccess::<u32>::try_from(&lf)?;
+                let ao: RandomAccess<u32> = lf.substructure("random")?;
 
                 for i in 1..=1024 {
                     ao.with_mut(i, |slot| *slot = i as u32)?;
@@ -20,7 +20,7 @@ fn self_destruct() -> Result<(), std::io::Error> {
             // re-open
 
             let lf = Landfill::open(path)?;
-            let ao = RandomAccess::<u32>::try_from(&lf)?;
+            let ao: RandomAccess<u32> = lf.substructure("random")?;
 
             for i in 1..=1024 {
                 assert_eq!(*ao.get(i).unwrap(), i as u32)
@@ -33,7 +33,7 @@ fn self_destruct() -> Result<(), std::io::Error> {
         // re-re-open
 
         let lf = Landfill::open(path)?;
-        let ao = RandomAccess::<u32>::try_from(&lf)?;
+        let ao: RandomAccess<u32> = lf.substructure("random")?;
 
         assert!(ao.get(1).is_none());
 

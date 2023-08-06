@@ -15,6 +15,6 @@ mod structures;
 pub use structures::*;
 
 mod disk;
-pub use disk::{Landfill, MappedFile};
+pub use disk::{GuardedLandfill, Landfill, MappedFile, Substructure};
 
 mod helpers;
