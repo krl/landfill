@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 use std::hash::Hash;
-use std::io;
 use std::marker::PhantomData;
+use std::{io, mem};
 
 use bytemuck::{Pod, Zeroable};
 use bytemuck_derive::*;
@@ -37,6 +37,11 @@ impl<K, V> Substructure for OnceMap<K, V> {
             _marker: PhantomData,
         })
     }
+
+    fn flush(&self) -> io::Result<()> {
+        self.data.flush()?;
+        self.index.flush()
+    }
 }
 
 impl<K, V> OnceMap<K, V>
@@ -52,9 +57,11 @@ where
                 let search_tag = search.tag_u32();
 
                 if search_tag == entry.tag {
-                    let stored_key = self.data.get::<K>(entry.k_ofs);
+                    let key_bytes =
+                        self.data.get(entry.k_ofs, mem::size_of::<K>() as u32);
+                    let key_slice: &[K] = bytemuck::cast_slice(key_bytes);
 
-                    if k == *stored_key {
+                    if k == key_slice[0] {
                         // we already have this key set
                         search.halt()
                     } else {
@@ -65,8 +72,18 @@ where
                 }
             },
             |search| {
-                let k_ofs = self.data.insert(k)?;
-                let v_ofs_relative = (self.data.insert(v)? - k_ofs) as u32;
+                let k_as_slice = &[k];
+                let k_as_bytes: &[u8] = bytemuck::cast_slice(k_as_slice);
+                let k_ofs = self
+                    .data
+                    .write_aligned(k_as_bytes, mem::align_of::<K>())?;
+
+                let v_as_slice = &[v];
+                let v_as_bytes: &[u8] = bytemuck::cast_slice(v_as_slice);
+                let v_ofs = self
+                    .data
+                    .write_aligned(v_as_bytes, mem::align_of::<V>())?;
+                let v_ofs_relative = (v_ofs - k_ofs) as u32;
 
                 Ok(Entry {
                     k_ofs,
@@ -85,12 +102,17 @@ where
             let search_tag = search.tag_u32();
 
             if search_tag == entry.tag {
-                let stored_key = self.data.get::<K>(entry.k_ofs);
+                let key_bytes =
+                    self.data.get(entry.k_ofs, mem::size_of::<K>() as u32);
+                let key_slice: &[K] = bytemuck::cast_slice(key_bytes);
 
-                if stored_key == k {
+                if &key_slice[0] == k {
                     // found it!
                     let v_ofs = entry.k_ofs + entry.v_ofs_relative as u64;
-                    result = Some(self.data.get::<V>(v_ofs));
+                    let v_bytes =
+                        self.data.get(v_ofs, mem::size_of::<V>() as u32);
+                    let v_slice: &[V] = bytemuck::cast_slice(v_bytes);
+                    result = Some(&v_slice[0]);
                     search.halt()
                 } else {
                     search.proceed()

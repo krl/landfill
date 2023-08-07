@@ -7,7 +7,7 @@ const A_LOT: usize = 1024;
 #[test]
 fn lots() -> Result<(), io::Error> {
     let lf = Landfill::ephemeral()?;
-    let map: OnceMap<usize, usize> = lf.substructure("map")?;
+    let map: OnceMap<_, _> = lf.substructure("map")?;
 
     for i in 0..A_LOT {
         map.insert(i, i + 1)?;

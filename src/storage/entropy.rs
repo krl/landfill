@@ -32,6 +32,10 @@ impl Substructure for Entropy {
             Entropy(rng.gen())
         })
     }
+
+    fn flush(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Entropy {

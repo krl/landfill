@@ -1,6 +1,4 @@
-use std::{io, mem};
-
-use bytemuck::Pod;
+use std::io;
 
 use super::bytes::DiskBytes;
 use crate::{GuardedLandfill, Journal, Substructure};
@@ -21,69 +19,43 @@ impl Substructure for AppendOnly {
 
         Ok(AppendOnly { bytes, journal })
     }
+
+    fn flush(&self) -> io::Result<()> {
+        self.bytes.flush()
+    }
 }
 
 impl AppendOnly {
-    /// Flush the data to disk
-    ///
-    /// This function blocks until completion
-    pub fn flush(&self) -> io::Result<()> {
-        self.bytes.flush()
-    }
-
-    /// Put a value into the Appendonly store, returning its ofset
-    pub fn insert<T: Pod>(&self, t: T) -> io::Result<u64> {
-        self.write(&[t])
-    }
-
-    /// Write a slice of values into the store returning their offset
-    pub fn write<T: Pod>(&self, items: &[T]) -> io::Result<u64> {
-        let len = items.len();
-        let byte_size = len * mem::size_of::<T>();
+    /// Write a slice of bytes into the store returning their offset
+    pub fn write_aligned(
+        &self,
+        bytes: &[u8],
+        alignment: usize,
+    ) -> io::Result<u64> {
+        let len = bytes.len();
 
         let write_offset = self.journal.update(|writehead| {
-            let res = DiskBytes::find_space_for(
-                *writehead,
-                len,
-                mem::align_of::<T>(),
-            );
-            *writehead = res + byte_size as u64;
+            let res = DiskBytes::find_space_for(*writehead, len, alignment);
+            *writehead = res + len as u64;
             res
         });
 
-        let slice =
-            unsafe { self.bytes.request_write(write_offset, byte_size)? };
+        let slice = unsafe { self.bytes.request_write(write_offset, len)? };
 
-        let insert_bytes: &[u8] = bytemuck::cast_slice(items);
-
-        slice.copy_from_slice(insert_bytes);
+        slice.copy_from_slice(bytes);
 
         Ok(write_offset)
     }
 
-    /// Get a reference to the data at offset and length
-    pub fn get<T>(&self, offset: u64) -> &T
-    where
-        T: Pod,
-    {
-        let bytes = self
-            .bytes
-            .read(offset, mem::size_of::<T>() as u32)
-            .expect("Fatal Error: invalid offset or length!");
-
-        &bytemuck::cast_slice(bytes)[0]
+    /// Write a slice of bytes into the store returning their offset
+    pub fn write(&self, bytes: &[u8]) -> io::Result<u64> {
+        self.write_aligned(bytes, 1)
     }
 
     /// Get a reference to the data at offset and length
-    pub fn get_slice<T>(&self, offset: u64, len: usize) -> &[T]
-    where
-        T: Pod,
-    {
-        let bytes = self
-            .bytes
-            .read(offset, (len * mem::size_of::<T>()) as u32)
-            .expect("Fatal Error: invalid offset or length!");
-
-        bytemuck::cast_slice(bytes)
+    pub fn get(&self, offset: u64, len: u32) -> &[u8] {
+        self.bytes
+            .read(offset, len)
+            .expect("Fatal Error: invalid offset or length!")
     }
 }

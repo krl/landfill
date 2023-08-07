@@ -38,10 +38,8 @@ impl Substructure for DiskBytes {
             lanes,
         })
     }
-}
 
-impl DiskBytes {
-    pub fn flush(&self) -> io::Result<()> {
+    fn flush(&self) -> io::Result<()> {
         for lane in &self.lanes {
             if let Some(lane) = lane.get() {
                 lane.flush()?
@@ -50,7 +48,9 @@ impl DiskBytes {
 
         Ok(())
     }
+}
 
+impl DiskBytes {
     pub fn find_space_for(offset: u64, len: usize, alignment: usize) -> u64 {
         let (lane_nr, inner_offset) = Self::lane_nr_and_ofs(offset);
         let lane_size = Self::lane_size(lane_nr);

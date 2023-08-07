@@ -44,6 +44,8 @@ impl Deref for GuardedLandfill {
 pub trait Substructure: Sized {
     /// Initialize a datastructure of this type, backed by `landfill`
     fn init(landfill: GuardedLandfill) -> io::Result<Self>;
+    /// Flush all data to disk
+    fn flush(&self) -> io::Result<()>;
 }
 
 #[derive(Debug)]

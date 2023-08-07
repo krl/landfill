@@ -37,7 +37,6 @@ impl<'a, T> Deref for RandomAccessGuard<'a, T> {
 }
 
 impl<T> Substructure for RandomAccess<T> {
-    /// Opens a new array at specified path, creating a directory if neccesary
     fn init(lf: GuardedLandfill) -> io::Result<Self> {
         let bytes = lf.substructure("array")?;
 
@@ -50,19 +49,16 @@ impl<T> Substructure for RandomAccess<T> {
             _marker: PhantomData,
         })
     }
+
+    fn flush(&self) -> io::Result<()> {
+        self.bytes.flush()
+    }
 }
 
 impl<T> RandomAccess<T>
 where
     T: Zeroable + Pod,
 {
-    /// Flush the in-memory changes to disk
-    ///
-    /// This call is blocking until the writes are complete
-    pub fn flush(&self) -> io::Result<()> {
-        self.bytes.flush()
-    }
-
     /// Get a reference to an element in the array
     ///
     /// Returns None if the element is uninitialized

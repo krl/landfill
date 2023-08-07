@@ -73,11 +73,6 @@ where
     {
         self.0.lock().update(f)
     }
-
-    /// Flushes the journal to disk, blocks until complete
-    pub fn flush(&self) -> io::Result<()> {
-        self.0.lock().flush()
-    }
 }
 
 impl<T> Substructure for Journal<T>
@@ -115,6 +110,10 @@ where
                 "Attempt at mapping the same file twice",
             ))
         }
+    }
+
+    fn flush(&self) -> io::Result<()> {
+        self.0.lock().flush()
     }
 }
 

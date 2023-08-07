@@ -29,6 +29,10 @@ impl<K, V> Substructure for SmashMap<K, V> {
             _marker: PhantomData,
         })
     }
+
+    fn flush(&self) -> io::Result<()> {
+        self.slots.flush()
+    }
 }
 
 /// Enum for signaling if a search should end or continue
