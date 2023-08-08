@@ -80,9 +80,7 @@ where
     T: Zeroable + Pod + Default + Hash + Ord,
 {
     fn init(lf: GuardedLandfill) -> io::Result<Self> {
-        if let Some(mapping) =
-            lf.map_file_create("".into(), JOURNAL_SIZE as u64)?
-        {
+        if let Some(mapping) = lf.map_file_create(JOURNAL_SIZE as u64)? {
             let journal_entry_slice = unsafe { mapping.bytes_mut() };
             let journal_entries: &mut [JournalEntry<T>] =
                 bytemuck::cast_slice_mut(journal_entry_slice);

@@ -11,7 +11,6 @@ use std::{
 use bytemuck::{Pod, Zeroable};
 use memmap2::MmapMut;
 use parking_lot::Mutex;
-use tempfile::TempDir;
 
 fn join_names(name1: &str, name2: &str) -> String {
     if name1.len() == 0 {
@@ -50,12 +49,9 @@ pub trait Substructure: Sized {
 
 #[derive(Debug)]
 struct LandfillInner {
-    dir_path: PathBuf,
-    reserved_paths: Mutex<HashSet<PathBuf>>,
+    dir_path: Option<PathBuf>,
+    reserved_names: Mutex<HashSet<String>>,
     self_destruct_sequence_initiated: Mutex<bool>,
-
-    // to manage the lifetime of temporary directories
-    _temp_dir: Option<TempDir>,
 }
 
 /// The datastructure representing an on-disk data dump
@@ -97,10 +93,9 @@ impl Landfill {
 
         Ok(Landfill {
             inner: Arc::new(LandfillInner {
-                _temp_dir: None,
-                dir_path,
+                dir_path: Some(dir_path),
                 self_destruct_sequence_initiated: Mutex::new(false),
-                reserved_paths: Mutex::new(HashSet::new()),
+                reserved_names: Mutex::new(HashSet::new()),
             }),
             name_prefix: String::new(),
         })
@@ -108,15 +103,11 @@ impl Landfill {
 
     /// Create a landfill backed by temporaray directories
     pub fn ephemeral() -> io::Result<Landfill> {
-        let dir = tempfile::tempdir()?;
-        let dir_path: PathBuf = dir.path().into();
-
         Ok(Landfill {
             inner: Arc::new(LandfillInner {
-                _temp_dir: Some(dir),
-                dir_path,
+                dir_path: None,
                 self_destruct_sequence_initiated: Mutex::new(false),
-                reserved_paths: Mutex::new(HashSet::new()),
+                reserved_names: Mutex::new(HashSet::new()),
             }),
             name_prefix: String::new(),
         })
@@ -130,7 +121,7 @@ impl Landfill {
     {
         let branch = self.branch(name.into());
 
-        if !self.register_path(branch.active_path()) {
+        if !self.register_name(branch.full_name()) {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "Attempt at mapping the same substructure twice",
@@ -142,7 +133,7 @@ impl Landfill {
         S::init(guarded)
     }
 
-    fn branch(&self, name: String) -> Self {
+    pub(crate) fn branch(&self, name: String) -> Self {
         let new_name = join_names(&self.name_prefix, &name);
 
         Landfill {
@@ -159,16 +150,17 @@ impl Landfill {
         *self.inner.self_destruct_sequence_initiated.lock() = true;
     }
 
-    fn active_path(&self) -> PathBuf {
-        let mut path = self.inner.dir_path.clone();
-        path.push(&self.name_prefix);
-        path
+    fn full_name(&self) -> String {
+        self.name_prefix.clone()
     }
 
-    fn active_path_plus(&self, name: &str) -> PathBuf {
-        let mut path = self.inner.dir_path.clone();
-        path.push(format!("{}_{}", &self.name_prefix, name));
-        path
+    fn active_path(&self) -> Option<PathBuf> {
+        self.inner.dir_path.as_ref().map(|path| {
+            let name = self.full_name();
+            let mut path = path.clone();
+            path.push(name);
+            path
+        })
     }
 
     /// Reads a static file into type `T` if it exists
@@ -180,63 +172,74 @@ impl Landfill {
         Init: Fn() -> T,
         T: Zeroable + Pod,
     {
-        let path = self.active_path();
+        if let Some(path) = self.active_path() {
+            if path.exists() {
+                let t = T::zeroed();
+                let t_slice = &mut [t];
+                let byte_slice: &mut [u8] = bytemuck::cast_slice_mut(t_slice);
 
-        let t = if path.exists() {
-            let t = T::zeroed();
-            let t_slice = &mut [t];
-            let byte_slice: &mut [u8] = bytemuck::cast_slice_mut(t_slice);
+                let mut file = OpenOptions::new().read(true).open(&path)?;
 
-            let mut file = OpenOptions::new().read(true).open(&path)?;
+                file.read_exact(byte_slice)?;
+                Ok(t)
+            } else {
+                let t = init();
+                let t_slice = &[t];
+                let byte_slice: &[u8] = bytemuck::cast_slice(t_slice);
 
-            file.read_exact(byte_slice)?;
-            t
+                let mut file =
+                    OpenOptions::new().write(true).create(true).open(&path)?;
+
+                file.write_all(byte_slice)?;
+                file.flush()?;
+                Ok(t)
+            }
         } else {
-            let t = init();
-            let t_slice = &[t];
-            let byte_slice: &[u8] = bytemuck::cast_slice(t_slice);
-
-            let mut file =
-                OpenOptions::new().write(true).create(true).open(&path)?;
-
-            file.write_all(byte_slice)?;
-            file.flush()?;
-            t
-        };
-        Ok(t)
+            // ephemeral landfill, no io necessary
+            Ok(init())
+        }
     }
 
-    fn register_path(&self, path: PathBuf) -> bool {
-        self.inner.reserved_paths.lock().insert(path)
+    fn register_name(&self, name: String) -> bool {
+        let mut names = self.inner.reserved_names.lock();
+
+        names.insert(name)
     }
 
     /// Open a file mapping, creating a file if none previously existed
     ///
     /// Returns `None` if the file has already been mapped
-    pub fn map_file_create(
-        &self,
-        name: String,
-        size: u64,
-    ) -> io::Result<Option<MappedFile>> {
-        let path = self.active_path_plus(&name);
+    pub fn map_file_create(&self, size: u64) -> io::Result<Option<MappedFile>> {
+        let name = self.full_name();
 
-        if self.register_path(path.clone()) {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(path)?;
+        if !self.register_name(name.clone()) {
+            if let Some(path) = self.active_path() {
+                let file = OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(path)?;
 
-            file.set_len(size)?;
+                file.set_len(size)?;
 
-            let map = UnsafeCell::new(unsafe { MmapMut::map_mut(&file)? });
+                let map = UnsafeCell::new(unsafe { MmapMut::map_mut(&file)? });
 
-            Ok(Some(MappedFile {
-                _file: file,
-                map,
-                _fill: self.clone(),
-            }))
+                Ok(Some(MappedFile {
+                    _file: Some(file),
+                    map,
+                    _fill: self.clone(),
+                }))
+            } else {
+                let map = UnsafeCell::new(MmapMut::map_anon(size as usize)?);
+
+                Ok(Some(MappedFile {
+                    _file: None,
+                    map,
+                    _fill: self.clone(),
+                }))
+            }
         } else {
+            // Already registered
             Ok(None)
         }
     }
@@ -244,13 +247,15 @@ impl Landfill {
     /// Open a file map, if it already exists
     pub fn map_file_existing(
         &self,
-        name: String,
         size: u64,
     ) -> io::Result<Option<MappedFile>> {
-        let path = self.active_path_plus(&name);
+        let full_name = self.full_name();
+        if !self.register_name(full_name) {
+            return Ok(None);
+        }
 
-        if path.exists() {
-            if self.register_path(path.clone()) {
+        if let Some(path) = self.active_path() {
+            if path.exists() {
                 match OpenOptions::new().read(true).write(true).open(&path) {
                     Ok(file) => {
                         file.set_len(size)?;
@@ -258,7 +263,7 @@ impl Landfill {
                             MmapMut::map_mut(&file)?
                         });
                         Ok(Some(MappedFile {
-                            _file: file,
+                            _file: Some(file),
                             map,
                             _fill: self.clone(),
                         }))
@@ -270,6 +275,7 @@ impl Landfill {
                 Ok(None)
             }
         } else {
+            // Ephemeral, no maps exist alreay
             Ok(None)
         }
     }
@@ -283,14 +289,16 @@ impl Landfill {
 
 impl Drop for LandfillInner {
     fn drop(&mut self) {
-        if self._temp_dir.is_none() {
+        if let Some(dir_path) = self.dir_path.as_ref() {
             // non-volatile paths comes with with lockfiles
-            let mut lock_file_path = self.dir_path.clone();
+            let mut lock_file_path = dir_path.clone();
             lock_file_path.push("_lock");
             let _ = fs::remove_file(lock_file_path);
-        }
-        if *self.self_destruct_sequence_initiated.lock() {
-            let _ = fs::remove_dir_all(&self.dir_path);
+
+            // remove all files if self destruct sequence was initiated
+            if *self.self_destruct_sequence_initiated.lock() {
+                let _ = fs::remove_dir_all(&dir_path);
+            }
         }
     }
 }
@@ -298,7 +306,7 @@ impl Drop for LandfillInner {
 /// A file with a corresponding memory map of the entire contents of the file
 pub struct MappedFile {
     map: UnsafeCell<MmapMut>,
-    _file: File,
+    _file: Option<File>,
     _fill: Landfill,
 }
 

@@ -18,8 +18,10 @@ impl Substructure for DiskBytes {
         let lanes = [LOCK; N_LANES];
 
         for (i, lane) in lanes.iter().enumerate() {
+            let lf_inner = lf.branch(format!("{:02x}", i));
+
             if let Some(lane_file) =
-                lf.map_file_existing(format!("{:02x}", i), Self::lane_size(i))?
+                lf_inner.map_file_existing(Self::lane_size(i))?
             {
                 // `OnceLock::set` returns the value you tried to set, had it
                 // already been initialized
@@ -87,11 +89,8 @@ impl DiskBytes {
 
             // Make sure the lane is initialized
             while lane_initialized.is_none() {
-                let name = format!("{:02x}", lane_nr);
-
-                if let Some(lane_file) =
-                    self.landfill.map_file_create(name, lane_size)?
-                {
+                let lf = self.landfill.branch(format!("{:02x}", lane_nr));
+                if let Some(lane_file) = lf.map_file_create(lane_size)? {
                     // Since we got the file from the landfill, we can be sure
                     // that no other thread has been able to progress here
                     //

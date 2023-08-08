@@ -2,7 +2,7 @@
 name = "landfill"
 description = "Various types for dealing with on-disk data"
 repository = "https://github.com/krl/landfill"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
@@ -13,8 +13,8 @@ memmap2 = "0.7.1"
 parking_lot = "0.12.1"
 seahash = "4.1.0"
 rand = "0.8.5"
-tempfile = "3.6.0"
 digest = "0.10.7"
 
 [dev-dependencies]
 blake3 = { version = "1.4.1", features = ["digest", "traits-preview"] }
+tempfile = "3.6.0"
