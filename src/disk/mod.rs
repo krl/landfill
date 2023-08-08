@@ -12,14 +12,6 @@ use bytemuck::{Pod, Zeroable};
 use memmap2::MmapMut;
 use parking_lot::Mutex;
 
-fn join_names(name1: &str, name2: &str) -> String {
-    if name1.len() == 0 {
-        name2.into()
-    } else {
-        format!("{name1}_{name2}")
-    }
-}
-
 /// A guard around a landfill that can only be created from this module
 pub struct GuardedLandfill {
     guarded: Landfill,
@@ -133,12 +125,14 @@ impl Landfill {
         S::init(guarded)
     }
 
-    pub(crate) fn branch(&self, name: String) -> Self {
-        let new_name = join_names(&self.name_prefix, &name);
+    pub(crate) fn branch(&self, mut name: String) -> Self {
+        if !self.name_prefix.is_empty() {
+            name = format!("{}_{name}", self.name_prefix);
+        }
 
         Landfill {
             inner: self.inner.clone(),
-            name_prefix: new_name,
+            name_prefix: name,
         }
     }
 
@@ -210,9 +204,7 @@ impl Landfill {
     ///
     /// Returns `None` if the file has already been mapped
     pub fn map_file_create(&self, size: u64) -> io::Result<Option<MappedFile>> {
-        let name = self.full_name();
-
-        if !self.register_name(name.clone()) {
+        if !self.register_name(self.full_name()) {
             if let Some(path) = self.active_path() {
                 let file = OpenOptions::new()
                     .read(true)
@@ -297,7 +289,7 @@ impl Drop for LandfillInner {
 
             // remove all files if self destruct sequence was initiated
             if *self.self_destruct_sequence_initiated.lock() {
-                let _ = fs::remove_dir_all(&dir_path);
+                let _ = fs::remove_dir_all(dir_path);
             }
         }
     }
@@ -319,8 +311,8 @@ impl AsRef<[u8]> for MappedFile {
 impl MappedFile {
     /// Returns a mutable reference into the bytes of the mapped file
     ///
-    /// Highly unsafe! You must guarantee that this only happens from one thread
-    /// at once.
+    /// # Safety
+    /// You must manually guarantee that this slice never aliases
     #[allow(clippy::mut_from_ref)]
     pub unsafe fn bytes_mut(&self) -> &mut [u8] {
         unsafe { &mut *self.map.get() }

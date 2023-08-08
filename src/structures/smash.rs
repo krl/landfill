@@ -106,8 +106,8 @@ impl<'a> SearchPattern<'a> {
         self.retries += 1;
         if self.retries == self.tries_limit {
             self.offset += self.fanout;
-            self.fanout = self.fanout << 1;
-            self.tries_limit = self.tries_limit << 1;
+            self.fanout <<= 1;
+            self.tries_limit <<= 1;
             self.entropy_state =
                 self.entropy_source.checksum(&self.entropy_state);
             self.retries = 0;

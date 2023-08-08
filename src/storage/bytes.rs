@@ -95,7 +95,7 @@ impl DiskBytes {
                     // that no other thread has been able to progress here
                     //
                     // Initializing here will thus always succeed, and we can ignore
-                    // the `Result` of setting te once lock
+                    // the `Result` of setting the once lock
                     let _ = self.lanes[lane_nr].set(lane_file);
                     lane_initialized =
                         Some(self.lanes[lane_nr].get().expect("Just set above"))
