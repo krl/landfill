@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 use crate::helpers;
 use crate::{Entropy, GuardedLandfill, RandomAccess, Substructure};
 
-const INITIAL_FANOUT: usize = 1024;
+const INITIAL_FANOUT: u64 = 1024;
 
 /// Low-level on-disk hashmap
 ///
@@ -46,10 +46,10 @@ pub enum SearchNext {
 pub struct SearchPattern<'a> {
     entropy_source: &'a Entropy,
     entropy_state: u64,
-    fanout: usize,
-    offset: usize,
-    retries: usize,
-    tries_limit: usize,
+    fanout: u64,
+    offset: u64,
+    retries: u64,
+    tries_limit: u64,
 }
 
 impl<'a> SearchPattern<'a> {
@@ -96,12 +96,10 @@ impl<'a> SearchPattern<'a> {
     }
 
     fn get_slot(&self) -> usize {
+        let slot = (self.entropy_state + self.retries) % self.fanout;
         // the global offset
-        self.offset
-		// the entropy state, modulo the currently active fanout
-            + (self.entropy_state % self.fanout as u64) as usize
-		// how many sequential retries have been made
-            + self.retries
+        let with_offset = self.offset + slot;
+        with_offset as usize
     }
 
     fn calculate_next(&mut self) {
@@ -167,7 +165,7 @@ where
                             *mut_slot = on_empty(&search)?;
                             finished = true;
                         }
-                        Ok::<_, io::Error>(())
+                        io::Result::Ok(())
                     })??;
                     if finished {
                         return Ok(());
