@@ -5,7 +5,7 @@ use landfill::{Landfill, OnceMap};
 const A_LOT: usize = 1024;
 
 #[test]
-fn lots() -> Result<(), io::Error> {
+fn lots() -> io::Result<()> {
     let lf = Landfill::ephemeral()?;
     let map: OnceMap<_, _> = lf.substructure("map")?;
 

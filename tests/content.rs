@@ -6,7 +6,7 @@ use landfill::{Content, Landfill};
 const A_LOT: u64 = 1024;
 
 #[test]
-fn lots_of_content() -> Result<(), io::Error> {
+fn lots_of_content() -> io::Result<()> {
     let lf = Landfill::ephemeral()?;
     let content: Content<Hasher> = lf.substructure("content")?;
 

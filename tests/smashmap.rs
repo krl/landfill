@@ -3,7 +3,7 @@ use std::io;
 use landfill::{Landfill, SmashMap};
 
 #[test]
-fn trivial() -> Result<(), io::Error> {
+fn trivial() -> io::Result<()> {
     let lf = Landfill::ephemeral()?;
     let h: SmashMap<[u8; 3], u32> = lf.substructure("map")?;
 
@@ -24,7 +24,7 @@ fn trivial() -> Result<(), io::Error> {
 const A_LOT: usize = 1024 * 128;
 
 #[test]
-fn a_lot() -> Result<(), io::Error> {
+fn a_lot() -> io::Result<()> {
     let lf = Landfill::ephemeral()?;
     let h: SmashMap<u32, u32> = lf.substructure("h")?;
 
